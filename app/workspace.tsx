@@ -1,6 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CaretDown,
+  CheckSquare,
+  ClockCounterClockwise,
+  Code,
+  GearSix,
+  Keyboard,
+  Microphone,
+  NotePencil,
+  PaperPlaneTilt,
+  PawPrint,
+  Robot,
+  Sparkle,
+  SquaresFour,
+  Waveform,
+} from "@phosphor-icons/react";
 import { cachePage, readCachedPage } from "../lib/offline-store";
 import {
   blocksToMarkdown,
@@ -166,6 +182,251 @@ function HomeView({ go }: { go: (section: Section) => void }) {
         <button onClick={() => go("code")}><span className="quick-icon blue">⌘</span><strong>打开代码</strong><small>编辑、审阅与执行任务</small><i>↗</i></button>
         <button onClick={() => go("connectors")}><span className="quick-icon mint">◎</span><strong>发送消息</strong><small>微信、QQ 或 Telegram</small><i>↗</i></button>
       </section>
+    </main>
+  );
+}
+
+type ConversationMessage = {
+  id: string;
+  role: "sophie" | "user";
+  text: string;
+  time: string;
+};
+
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: { results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }> }) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+};
+
+type SophieDesktopBridge = {
+  setPetEnabled: (enabled: boolean) => Promise<void> | void;
+  showMain: () => Promise<void> | void;
+};
+
+const starterMessages: ConversationMessage[] = [
+  { id: "welcome", role: "user", text: "帮我整理一下今天的工作重点，并安排好接下来的任务。", time: "10:42" },
+  { id: "question", role: "sophie", text: "好的主人，已为你梳理今日重点，并安排好了后续任务。", time: "10:42" },
+];
+
+function ConversationHome({ go }: { go: (section: Section) => void }) {
+  const [mode, setMode] = useState<"voice" | "text">("voice");
+  const [messages, setMessages] = useState(starterMessages);
+  const [draft, setDraft] = useState("");
+  const [listening, setListening] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [status, setStatus] = useState("轻触麦克风开始说话");
+  const [petEnabled, setPetEnabled] = useState(() => typeof window === "undefined" || localStorage.getItem("supersophie-pet-enabled") !== "false");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+
+  useEffect(() => {
+    return () => recognitionRef.current?.stop();
+  }, []);
+
+  const speak = useCallback((text: string) => {
+    if (!("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "zh-CN";
+    utterance.rate = 1.03;
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  const sendMessage = useCallback((value: string) => {
+    const clean = value.trim();
+    if (!clean) return;
+    const now = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+    setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", text: clean, time: now }]);
+    setDraft("");
+    setLiveTranscript("");
+    setStatus("Sophie 正在思考…");
+    window.setTimeout(() => {
+      const reply = clean.includes("任务")
+        ? "可以。我会先拆解目标、确认需要的工具，再组建合适的 Agent 团队。"
+        : "我在听。你可以继续说，我会把对话里的重点整理成笔记或任务。";
+      const replyTime = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "sophie", text: reply, time: replyTime }]);
+      setStatus("轻触麦克风继续说话");
+      if (mode === "voice") speak(reply);
+    }, 620);
+  }, [mode, speak]);
+
+  const toggleListening = () => {
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      setStatus("轻触麦克风继续说话");
+      return;
+    }
+    const speechWindow = window as typeof window & {
+      SpeechRecognition?: new () => SpeechRecognitionLike;
+      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+    };
+    const Recognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+    if (!Recognition) {
+      setMode("text");
+      setStatus("当前环境不支持语音识别，已切换到文字输入");
+      return;
+    }
+    const recognition = new Recognition();
+    recognition.lang = "zh-CN";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.onresult = (event) => {
+      let transcript = "";
+      let isFinal = false;
+      for (let index = 0; index < event.results.length; index += 1) {
+        transcript += event.results[index][0].transcript;
+        isFinal ||= event.results[index].isFinal;
+      }
+      setLiveTranscript(transcript);
+      setStatus(isFinal ? "我听到了" : "正在听…");
+      if (isFinal) sendMessage(transcript);
+    };
+    recognition.onend = () => setListening(false);
+    recognition.onerror = () => {
+      setListening(false);
+      setStatus("没有听清，再试一次或切换文字输入");
+    };
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+    setStatus("正在听…");
+  };
+
+  const togglePet = async () => {
+    const next = !petEnabled;
+    setPetEnabled(next);
+    localStorage.setItem("supersophie-pet-enabled", String(next));
+    const desktop = (window as typeof window & { sophieDesktop?: SophieDesktopBridge }).sophieDesktop;
+    await desktop?.setPetEnabled(next);
+  };
+
+  const railItems = [
+    { label: "笔记", icon: NotePencil, section: "notes" as Section },
+    { label: "任务", icon: CheckSquare, section: "database" as Section },
+    { label: "Agent", icon: Robot, section: "agents" as Section },
+    { label: "代码", icon: Code, section: "code" as Section },
+  ];
+
+  return (
+    <main className="conversation-home">
+      <header className="conversation-topbar">
+        <button className="conversation-brand" onClick={() => setHistoryOpen(false)} aria-label="SuperSophie 首页">
+          <span><Sparkle weight="fill" /></span>
+          <strong>SuperSophie</strong>
+        </button>
+        <div className="conversation-picker-wrap">
+          <button className="conversation-picker" onClick={() => setHistoryOpen((open) => !open)} aria-expanded={historyOpen}>
+            <span>今晚的对话</span><CaretDown weight="bold" />
+          </button>
+          {historyOpen && (
+            <div className="conversation-history">
+              <button onClick={() => setHistoryOpen(false)}><strong>今晚的对话</strong><small>正在进行</small></button>
+              <button onClick={() => setHistoryOpen(false)}><strong>产品发布计划</strong><small>昨天</small></button>
+              <button onClick={() => setHistoryOpen(false)}><strong>离线同步讨论</strong><small>周三</small></button>
+            </div>
+          )}
+        </div>
+        <button className={`pet-mode-pill ${petEnabled ? "enabled" : ""}`} onClick={togglePet} aria-pressed={petEnabled}>
+          <PawPrint weight="fill" />
+          <span>宠物模式 · {petEnabled ? "开启" : "关闭"}</span>
+          <Sparkle weight="fill" />
+          <i aria-hidden="true" />
+        </button>
+      </header>
+
+      <nav className="conversation-rail" aria-label="工作区入口">
+        <button className="active" aria-label="对话"><Sparkle weight="fill" /></button>
+        {railItems.map(({ label, icon: Icon, section }) => <button key={label} onClick={() => go(section)} aria-label={label} title={label}><Icon /></button>)}
+        <button className="rail-settings" onClick={() => go("connectors")} aria-label="设置与连接器" title="设置与连接器"><GearSix /></button>
+      </nav>
+
+      <section className="conversation-stage">
+        <div className="conversation-copy">
+          <div className="message-stream" aria-live="polite">
+            {messages.slice(-4).map((message) => (
+              <article className={`conversation-message ${message.role}`} key={message.id}>
+                <header>
+                  {message.role === "sophie" && <Sparkle weight="fill" />}
+                  <strong>{message.role === "sophie" ? "Sophie" : "你"}</strong>
+                  <small>{message.time}</small>
+                </header>
+                <div className="message-body">
+                  <p>{message.text}</p>
+                  {message.id === "question" && (
+                    <>
+                      <ul>
+                        <li><Sparkle weight="fill" />梳理项目进度与风险点</li>
+                        <li><Sparkle weight="fill" />准备下午的方案评审材料</li>
+                        <li><Sparkle weight="fill" />跟进团队反馈与优化清单</li>
+                      </ul>
+                      <p className="conversation-follow-up">需要我现在创建任务并提醒相关时间吗？</p>
+                    </>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+          <div className="quick-prompts">
+            <button onClick={() => sendMessage("是的，创建任务")}>是的，创建任务</button>
+            <button onClick={() => sendMessage("先不急，稍后再说")}>先不急，稍后再说</button>
+          </div>
+        </div>
+
+        <div className="sophie-portrait" aria-hidden="true">
+          <div className="portrait-glow" />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/sophie-companion.png" alt="" />
+        </div>
+      </section>
+
+      <section className={`conversation-dock ${listening ? "is-listening" : ""} ${mode === "text" ? "mode-text" : ""}`}>
+        <div className="dock-status" aria-live="polite">
+          <Waveform weight="bold" preserveAspectRatio="none" />
+          <div><strong>{listening ? liveTranscript || "正在听…" : "随时开口，我一直在"}</strong><small>{mode === "voice" ? status : "按 Enter 发送，Shift + Enter 换行"}</small></div>
+        </div>
+
+        <div className="dock-center">
+          {mode === "voice" ? (
+            <button className="microphone-button" onClick={toggleListening} aria-pressed={listening} aria-label={listening ? "停止聆听" : "开始语音对话"}>
+              <Microphone weight="fill" />
+            </button>
+          ) : (
+            <div className="text-composer">
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(draft); }
+                }}
+                autoFocus
+                rows={1}
+                placeholder="和 Sophie 说点什么…"
+                aria-label="输入消息"
+              />
+              <button onClick={() => sendMessage(draft)} disabled={!draft.trim()} aria-label="发送消息"><PaperPlaneTilt weight="fill" /></button>
+            </div>
+          )}
+          <div className="mode-switch" role="group" aria-label="输入方式">
+            <button className={mode === "voice" ? "active" : ""} onClick={() => setMode("voice")}><Microphone weight="fill" />语音</button>
+            <button className={mode === "text" ? "active" : ""} onClick={() => setMode("text")}><Keyboard weight="bold" />文字</button>
+          </div>
+        </div>
+
+        <button className="open-workspace" onClick={() => go("notes")}>
+          <SquaresFour weight="fill" />
+          <span><strong>打开工作区</strong><small>笔记 · 任务 · Agent</small></span>
+        </button>
+      </section>
+
+      <button className="conversation-history-shortcut" onClick={() => setHistoryOpen(true)}><ClockCounterClockwise />历史对话</button>
     </main>
   );
 }
@@ -424,10 +685,9 @@ function SearchPalette({ close, go }: { close: () => void; go: (section: Section
 export function SophieWorkspace() {
   const [section, setSection] = useState<Section>("home");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [online, setOnline] = useState(true);
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   useEffect(() => {
-    setOnline(navigator.onLine);
     const onOnline = () => setOnline(true);
     const onOffline = () => setOnline(false);
     const onKey = (event: KeyboardEvent) => {
@@ -438,5 +698,6 @@ export function SophieWorkspace() {
     return () => { removeEventListener("online", onOnline); removeEventListener("offline", onOffline); removeEventListener("keydown", onKey); };
   }, []);
   const go = (next: Section) => { setSection(next); setSidebarOpen(false); };
+  if (section === "home") return <ConversationHome go={go} />;
   return <div className="workspace-shell"><button className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button><aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><div className="workspace-switcher"><span className="brand-mark">S</span><div><strong>SuperSophie</strong><small>Personal workspace</small></div><button>⌄</button></div><nav>{navItems.map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span className="nav-icon">{item.icon}</span><strong>{item.label}</strong>{item.hint && <i>{item.hint}</i>}</button>)}</nav><div className="sidebar-section"><p>空间</p><button onClick={() => go("notes")}><span className="space-dot violet" />产品与架构</button><button onClick={() => go("database")}><span className="space-dot amber" />项目与任务</button><button onClick={() => go("notes")}><span className="space-dot blue" />研究与灵感</button><button><span>＋</span>新建空间</button></div><div className="sidebar-bottom"><button><span>?</span><strong>帮助与快捷键</strong></button><div className="sync-card"><span className="cloud-mark">☁</span><div><strong>{online ? "云端已同步" : "当前离线"}</strong><small>{online ? "App Cloud · 刚刚" : "修改保存在此设备"}</small></div><StatusDot tone={online ? "green" : "amber"} /></div></div></aside><div className="workspace-main"><TopBar section={section} onSearch={() => setSearchOpen(true)} />{section === "home" && <HomeView go={go} />}{section === "notes" && <NotesView />}{section === "database" && <DatabaseView />}{section === "agents" && <AgentsView />}{section === "code" && <CodeView />}{section === "connectors" && <ConnectorsView />}</div>{searchOpen && <SearchPalette close={() => setSearchOpen(false)} go={go} />}<nav className="mobile-nav">{navItems.slice(0, 5).map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span>{item.icon}</span><small>{item.label}</small></button>)}</nav></div>;
 }

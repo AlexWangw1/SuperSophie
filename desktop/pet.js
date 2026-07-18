@@ -3,6 +3,9 @@ const bubble = document.getElementById("pet-bubble");
 const openButton = document.getElementById("open-app");
 const quitButton = document.getElementById("quit-app");
 
+const petImageUrl = new URLSearchParams(window.location.search).get("image");
+if (petImageUrl) character.src = petImageUrl;
+
 const messages = [
   "我会留在这里，需要我时双击一下。",
   "今天也辛苦了，要不要把想法先交给我？",

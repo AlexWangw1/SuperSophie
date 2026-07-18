@@ -10,18 +10,20 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "vinext build && node --test tests/rendered-html.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "test": "vinext build && node --experimental-strip-types --test tests/*.test.mjs",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern work --ignore-pattern build",
     "db:generate": "drizzle-kit generate",
     "desktop:dev": "concurrently -k \"pnpm dev\" \"wait-on http://localhost:3000 && electron desktop/main.cjs\"",
     "desktop:pack": "pnpm build && electron-builder --win"
   },
   "dependencies": {
+    "@openai/agents": "^0.13.4",
     "@phosphor-icons/react": "^2.1.10",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
@@ -49,11 +51,18 @@
   "build": {
     "appId": "com.supersophie.desktop",
     "productName": "SuperSophie",
+    "beforeBuild": "desktop/before-build.cjs",
+    "directories": {
+      "app": "desktop"
+    },
     "files": [
-      "desktop/**/*",
-      "public/sophie-companion.png",
-      "public/favicon.svg",
-      "package.json"
+      "**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "public/sophie-companion.png",
+        "to": "sophie-companion.png"
+      }
     ],
     "win": {
       "icon": "desktop/icon.ico",

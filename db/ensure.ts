@@ -31,6 +31,93 @@ export function ensureSchema() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS agent_runs_workspace_updated_idx
+      ON agent_runs (workspace_id, updated_at DESC)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS agent_run_events (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      agent_name TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      content_markdown TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS agent_run_events_run_created_idx
+      ON agent_run_events (run_id, created_at)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL DEFAULT 'default',
+      title TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS conversations_workspace_updated_idx
+      ON conversations (workspace_id, updated_at DESC)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS chat_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content_markdown TEXT NOT NULL,
+      run_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS chat_messages_conversation_created_idx
+      ON chat_messages (conversation_id, created_at)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS data_sources (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL DEFAULT 'default',
+      name TEXT NOT NULL,
+      schema_markdown TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS database_views (
+      id TEXT PRIMARY KEY,
+      data_source_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      view_type TEXT NOT NULL,
+      config_markdown TEXT NOT NULL,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS database_views_source_idx
+      ON database_views (data_source_id, updated_at)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS database_records (
+      id TEXT PRIMARY KEY,
+      data_source_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      markdown TEXT NOT NULL,
+      properties_json TEXT NOT NULL DEFAULT '{}',
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS database_records_source_updated_idx
+      ON database_records (data_source_id, updated_at DESC)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS code_projects (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL DEFAULT 'default',
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS code_files (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      language TEXT NOT NULL DEFAULT 'text',
+      content_markdown TEXT NOT NULL,
+      content_text TEXT NOT NULL DEFAULT '',
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (project_id, path)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS code_files_project_path_idx
+      ON code_files (project_id, path)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS connector_outbox (
       id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL DEFAULT 'default',
@@ -40,6 +127,53 @@ export function ensureSchema() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       sent_at TEXT
     )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS connector_outbox_details (
+      outbox_id TEXT PRIMARY KEY,
+      target TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS connector_delivery_attempts (
+      id TEXT PRIMARY KEY,
+      outbox_id TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      status TEXT NOT NULL,
+      response_markdown TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS connector_delivery_attempts_outbox_idx
+      ON connector_delivery_attempts (outbox_id, created_at DESC)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS connector_credentials (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL DEFAULT 'default',
+      provider TEXT NOT NULL,
+      credential_ciphertext TEXT NOT NULL,
+      account_label TEXT NOT NULL DEFAULT '',
+      scopes TEXT NOT NULL DEFAULT '',
+      expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (workspace_id, provider)
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS connector_oauth_states (
+      state TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL DEFAULT 'default',
+      provider TEXT NOT NULL,
+      code_verifier TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS connector_sync_events (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL DEFAULT 'default',
+      provider TEXT NOT NULL,
+      status TEXT NOT NULL,
+      remote_path TEXT NOT NULL DEFAULT '',
+      details_markdown TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS connector_sync_events_workspace_idx
+      ON connector_sync_events (workspace_id, provider, created_at DESC)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS assets (
       id TEXT PRIMARY KEY,
       document_id TEXT,
@@ -53,4 +187,3 @@ export function ensureSchema() {
   ]);
   return schemaReady;
 }
-

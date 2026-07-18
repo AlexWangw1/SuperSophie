@@ -4,12 +4,12 @@ SuperSophie 是一个 Markdown-first、离线优先、可同步的个人智能�
 
 ## 首期产品面
 
-1. **块编辑与知识库**：段落、标题、待办、列表、引用、提示、代码、图片、文件、数据库、页面引用；支持 `/` 命令、拖拽排序、块转换和键盘操作。
+1. **块编辑与知识库**：段落、标题、待办、列表、引用、提示、折叠、分割线、代码、图片、文件、数据库、页面引用；支持 `/` 命令、块转换、拖拽排序、上下移动和键盘 `Alt+↑/↓`。
 2. **数据库**：每条记录也是可编辑页面；同一数据源可建立多个互不干扰的视图。
 3. **Agent Work**：主 Agent 分解目标、创建子 Agent、分配模型、展示依赖、执行日志、产物与人工审批点。
-4. **代码工作台**：文件树、多标签编辑、差异审阅、终端输出和 Agent 任务上下文。
+4. **代码工作台**：App Cloud Markdown 包装代码文件、revision 保存、变更统计；桌面端受限本地目录读写、真实 test/typecheck/lint 输出和 Agent 审阅。
 5. **模型配置**：支持 OpenAI、Anthropic、Google、OpenRouter、Ollama 与 OpenAI-compatible endpoint；密钥不写入 Markdown。
-6. **连接器**：微信、QQ、Telegram、OneDrive 与 App Cloud；消息先进入可审阅的 Markdown outbox，再由连接器发送。
+6. **连接器**：Telegram、企业微信官方群机器人、QQ 官方机器人、OneDrive 与 App Cloud；消息先进入可审阅的 Markdown outbox，只有人工批准后才能发送。
 7. **离线包**：`.sophie` 文件使用 `SOPHIE/1` 魔数，包含 manifest、页面 Markdown、块索引、属性、附件与校验和。最新版客户端可直接打开，不依赖网络。
 8. **同步**：设备本地保留离线副本；在线时通过 revision、内容哈希和变更日志与 D1/R2、OneDrive 或自托管存储同步。
 
@@ -29,6 +29,12 @@ SuperSophie 是一个 Markdown-first、离线优先、可同步的个人智能�
 - https://www.notion.com/help/database-properties
 - https://www.notion.com/help/data-sources-and-linked-databases
 - https://www.notion.com/help/what-is-a-block
+- https://www.notion.com/help/category/database-views/all
+- https://www.notion.com/help/dashboards
+
+数据库运行证据与当前边界见 `docs/DATABASE_ENGINE.md`。
+
+连接器运行方式、凭据边界与当前未实现项见 `docs/CONNECTORS.md`。
 
 ## Markdown 约定
 
@@ -58,4 +64,3 @@ YAML frontmatter 保存页面级属性；正文是可移植 Markdown；HTML 注�
 - API Key、OAuth refresh token 等秘密进入系统密钥库或托管环境变量，不进入 Markdown、同步日志或 `.sophie` 包。
 - 所有社交消息默认先预览再发送；Agent 不能绕过审批策略。
 - 云端 D1 保存可查询索引和 Markdown，R2 保存附件与离线包；设备数据库是离线副本，不是在线模式下的唯一真源。
-

@@ -85,13 +85,14 @@ export async function encryptOneDriveCredential(credential: OneDriveCredential, 
 export async function getOneDriveAccessToken(input: {
   db: D1Database;
   bindings: ConnectorBindings;
+  workspaceId: string;
   fetcher?: typeof fetch;
 }) {
   const config = requireOneDriveBindings(input.bindings);
   const row = await input.db.prepare(
     `SELECT credential_ciphertext AS credentialCiphertext, account_label AS accountLabel
-     FROM connector_credentials WHERE workspace_id = 'default' AND provider = 'onedrive' LIMIT 1`,
-  ).first<{ credentialCiphertext: string; accountLabel: string }>();
+     FROM connector_credentials WHERE workspace_id = ? AND provider = 'onedrive' LIMIT 1`,
+  ).bind(input.workspaceId).first<{ credentialCiphertext: string; accountLabel: string }>();
   if (!row) throw new Error("OneDrive 尚未连接");
   let credential = await decryptConnectorCredential<OneDriveCredential>(row.credentialCiphertext, config.encryptionKey);
   if (Date.parse(credential.expiresAt) <= Date.now() + 60_000) {
@@ -113,8 +114,8 @@ export async function getOneDriveAccessToken(input: {
     const ciphertext = await encryptConnectorCredential(credential, config.encryptionKey);
     await input.db.prepare(
       `UPDATE connector_credentials SET credential_ciphertext = ?, scopes = ?, expires_at = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE workspace_id = 'default' AND provider = 'onedrive'`,
-    ).bind(ciphertext, credential.scope, credential.expiresAt).run();
+       WHERE workspace_id = ? AND provider = 'onedrive'`,
+    ).bind(ciphertext, credential.scope, credential.expiresAt, input.workspaceId).run();
   }
   return { accessToken: credential.accessToken, accountLabel: row.accountLabel };
 }

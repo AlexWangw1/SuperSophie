@@ -31,19 +31,19 @@ function conversationMarkdown(conversation: SnapshotRow, messages: SnapshotRow[]
   ].join("\n");
 }
 
-export async function buildWorkspaceSnapshotMarkdown(db: D1Database) {
+export async function buildWorkspaceSnapshotMarkdown(db: D1Database, workspaceId: string) {
   const [documents, sources, views, records, codeFiles, runs, events, conversations, messages, outbox, assets] = await Promise.all([
-    db.prepare(`SELECT * FROM documents WHERE workspace_id = 'default' ORDER BY updated_at`).all<SnapshotRow>(),
-    db.prepare(`SELECT * FROM data_sources WHERE workspace_id = 'default' ORDER BY updated_at`).all<SnapshotRow>(),
-    db.prepare(`SELECT v.* FROM database_views v JOIN data_sources s ON s.id = v.data_source_id WHERE s.workspace_id = 'default' ORDER BY v.updated_at`).all<SnapshotRow>(),
-    db.prepare(`SELECT r.* FROM database_records r JOIN data_sources s ON s.id = r.data_source_id WHERE s.workspace_id = 'default' ORDER BY r.updated_at`).all<SnapshotRow>(),
-    db.prepare(`SELECT f.* FROM code_files f JOIN code_projects p ON p.id = f.project_id WHERE p.workspace_id = 'default' ORDER BY f.path`).all<SnapshotRow>(),
-    db.prepare(`SELECT * FROM agent_runs WHERE workspace_id = 'default' ORDER BY updated_at`).all<SnapshotRow>(),
-    db.prepare(`SELECT e.* FROM agent_run_events e JOIN agent_runs r ON r.id = e.run_id WHERE r.workspace_id = 'default' ORDER BY e.created_at`).all<SnapshotRow>(),
-    db.prepare(`SELECT * FROM conversations WHERE workspace_id = 'default' ORDER BY updated_at`).all<SnapshotRow>(),
-    db.prepare(`SELECT m.* FROM chat_messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.workspace_id = 'default' ORDER BY m.created_at`).all<SnapshotRow>(),
-    db.prepare(`SELECT * FROM connector_outbox WHERE workspace_id = 'default' ORDER BY created_at`).all<SnapshotRow>(),
-    db.prepare(`SELECT * FROM assets ORDER BY created_at`).all<SnapshotRow>(),
+    db.prepare(`SELECT * FROM documents WHERE workspace_id = ? ORDER BY updated_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT * FROM data_sources WHERE workspace_id = ? ORDER BY updated_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT v.* FROM database_views v JOIN data_sources s ON s.id = v.data_source_id WHERE s.workspace_id = ? ORDER BY v.updated_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT r.* FROM database_records r JOIN data_sources s ON s.id = r.data_source_id WHERE s.workspace_id = ? ORDER BY r.updated_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT f.* FROM code_files f JOIN code_projects p ON p.id = f.project_id WHERE p.workspace_id = ? ORDER BY f.path`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT * FROM agent_runs WHERE workspace_id = ? ORDER BY updated_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT e.* FROM agent_run_events e JOIN agent_runs r ON r.id = e.run_id WHERE r.workspace_id = ? ORDER BY e.created_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT * FROM conversations WHERE workspace_id = ? ORDER BY updated_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT m.* FROM chat_messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.workspace_id = ? ORDER BY m.created_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT * FROM connector_outbox WHERE workspace_id = ? ORDER BY created_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT a.* FROM assets a JOIN asset_ownership o ON o.asset_id = a.id WHERE o.workspace_id = ? ORDER BY a.created_at`).bind(workspaceId).all<SnapshotRow>(),
   ]);
   const generatedAt = new Date().toISOString();
   const sections = [
@@ -61,7 +61,7 @@ export async function buildWorkspaceSnapshotMarkdown(db: D1Database) {
     "---",
     "sophie: 1",
     "kind: workspace-snapshot",
-    "workspaceId: default",
+    `workspaceId: ${workspaceId}`,
     `generatedAt: ${generatedAt}`,
     "credentialsIncluded: false",
     "---",

@@ -1,6 +1,52 @@
 import { sql } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  handle: text("handle").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  accessKeyHash: text("access_key_hash").notNull(),
+  accessKeySalt: text("access_key_salt").notNull(),
+  accessKeyIterations: integer("access_key_iterations").notNull().default(600000),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const workspaces = sqliteTable("workspaces", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  ownerUserId: text("owner_user_id").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const workspaceMembers = sqliteTable("workspace_members", {
+  workspaceId: text("workspace_id").notNull(),
+  userId: text("user_id").notNull(),
+  role: text("role").notNull().default("owner"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const sessions = sqliteTable("sessions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  activeWorkspaceId: text("active_workspace_id").notNull(),
+  deviceLabel: text("device_label").notNull().default(""),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const securityEvents = sqliteTable("security_events", {
+  id: text("id").primaryKey(),
+  userId: text("user_id"),
+  workspaceId: text("workspace_id"),
+  eventType: text("event_type").notNull(),
+  detailsMarkdown: text("details_markdown").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const documents = sqliteTable("documents", {
   id: text("id").primaryKey(),
   workspaceId: text("workspace_id").notNull().default("default"),
@@ -172,5 +218,11 @@ export const assets = sqliteTable("assets", {
   size: integer("size").notNull(),
   sha256: text("sha256").notNull(),
   r2Key: text("r2_key").notNull().unique(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const assetOwnership = sqliteTable("asset_ownership", {
+  assetId: text("asset_id").notNull(),
+  workspaceId: text("workspace_id").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

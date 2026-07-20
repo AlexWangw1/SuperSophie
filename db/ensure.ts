@@ -5,6 +5,61 @@ let schemaReady: Promise<unknown[]> | undefined;
 export function ensureSchema() {
   if (!env.DB) throw new Error("D1 binding DB is unavailable");
   schemaReady ??= env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      handle TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      access_key_hash TEXT NOT NULL,
+      access_key_salt TEXT NOT NULL,
+      access_key_iterations INTEGER NOT NULL DEFAULT 600000,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS workspace_members (
+      workspace_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'owner',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (workspace_id, user_id)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS workspace_members_user_idx
+      ON workspace_members (user_id, created_at)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      active_workspace_id TEXT NOT NULL,
+      device_label TEXT NOT NULL DEFAULT '',
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS sessions_user_expires_idx
+      ON sessions (user_id, expires_at)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS auth_login_limits (
+      id TEXT PRIMARY KEY,
+      failures INTEGER NOT NULL DEFAULT 0,
+      window_started_at TEXT NOT NULL,
+      blocked_until TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS security_events (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      workspace_id TEXT,
+      event_type TEXT NOT NULL,
+      details_markdown TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS security_events_user_created_idx
+      ON security_events (user_id, created_at DESC)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS documents (
       id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL DEFAULT 'default',
@@ -184,6 +239,14 @@ export function ensureSchema() {
       r2_key TEXT NOT NULL UNIQUE,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS asset_ownership (
+      asset_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (asset_id, workspace_id)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS asset_ownership_workspace_idx
+      ON asset_ownership (workspace_id, created_at DESC)`),
   ]);
   return schemaReady;
 }

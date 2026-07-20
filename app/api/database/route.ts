@@ -1,8 +1,10 @@
 import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { ensureSchema } from "../../../db/ensure";
+import { authErrorResponse, requireWorkspace } from "../../../lib/auth";
+import { scopedResourceId } from "../../../lib/workspace-resource";
 
-const SOURCE_ID = "product-tasks";
+const SOURCE_KEY = "product-tasks";
 const viewTypes = ["table", "board", "timeline", "calendar", "list", "gallery", "chart", "map", "feed", "dashboard", "form"] as const;
 
 const defaultRecords = [
@@ -32,7 +34,7 @@ function safeJson<T>(source: string, fallback: T): T {
   try { return JSON.parse(source) as T; } catch { return fallback; }
 }
 
-function recordMarkdown(id: string, title: string, properties: Record<string, unknown>, body?: string, sourceId = SOURCE_ID) {
+function recordMarkdown(id: string, title: string, properties: Record<string, unknown>, body?: string, sourceId = SOURCE_KEY) {
   const propertyLines = Object.entries(properties).map(([key, value]) => `  ${key}: ${JSON.stringify(value)}`).join("\n");
   return `---\nsophie: 1\nid: ${id}\nkind: database-item\ndataSourceId: ${sourceId}\nproperties:\n${propertyLines}\n---\n\n# ${title}\n\n<!-- sophie:block=${id}-body type=text -->\n${body?.trim() || ""}\n`;
 }
@@ -41,15 +43,16 @@ function viewConfigMarkdown(type: string, config: Record<string, unknown>) {
   return `# ${type} view\n\n\`\`\`json\n${JSON.stringify(config, null, 2)}\n\`\`\`\n`;
 }
 
-async function ensureDefaultDatabase() {
+async function ensureDefaultDatabase(workspaceId: string) {
   await ensureSchema();
+  const sourceId = scopedResourceId(workspaceId, SOURCE_KEY);
   const existingSource = await env.DB.prepare(
-    `SELECT id FROM data_sources WHERE id = ? AND workspace_id = 'default'`,
-  ).bind(SOURCE_ID).first();
+    `SELECT id FROM data_sources WHERE id = ? AND workspace_id = ?`,
+  ).bind(sourceId, workspaceId).first();
   await env.DB.prepare(
     `INSERT OR IGNORE INTO data_sources (id, workspace_id, name, schema_markdown)
-     VALUES (?, 'default', '产品任务', ?)`,
-  ).bind(SOURCE_ID, sourceSchemaMarkdown).run();
+     VALUES (?, ?, '产品任务', ?)`,
+  ).bind(sourceId, workspaceId, sourceSchemaMarkdown).run();
 
   for (const type of viewTypes) {
     const config = {
@@ -64,24 +67,26 @@ async function ensureDefaultDatabase() {
       `INSERT OR IGNORE INTO database_views
         (id, data_source_id, name, view_type, config_markdown, config_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).bind(`${SOURCE_ID}:${type}`, SOURCE_ID, type, type, viewConfigMarkdown(type, config), JSON.stringify(config)).run();
+    ).bind(`${sourceId}:${type}`, sourceId, type, type, viewConfigMarkdown(type, config), JSON.stringify(config)).run();
   }
 
   if (!existingSource) {
     for (const record of defaultRecords) {
-      const { id, title, ...properties } = record;
+      const { id: recordKey, title, ...properties } = record;
+      const id = `${sourceId}:${recordKey}`;
       await env.DB.prepare(
         `INSERT INTO database_records
           (id, data_source_id, title, markdown, properties_json)
          VALUES (?, ?, ?, ?, ?)`,
-      ).bind(id, SOURCE_ID, title, recordMarkdown(id, title, properties), JSON.stringify(properties)).run();
+      ).bind(id, sourceId, title, recordMarkdown(id, title, properties, undefined, sourceId), JSON.stringify(properties)).run();
     }
   }
+  return sourceId;
 }
 
 const RecordActionSchema = z.object({
   action: z.literal("upsert-record"),
-  sourceId: z.string().min(1).max(120).default(SOURCE_ID),
+  sourceId: z.string().min(1).max(240).default(SOURCE_KEY),
   record: z.object({
     id: z.string().min(1).max(120).optional(),
     title: z.string().trim().min(1).max(500),
@@ -97,7 +102,7 @@ const ViewActionSchema = z.object({
     id: z.string().min(1).max(160),
     name: z.string().min(1).max(100),
     type: z.enum(viewTypes),
-    sourceId: z.string().min(1).max(120).default(SOURCE_ID),
+    sourceId: z.string().min(1).max(240).default(SOURCE_KEY),
     config: z.record(z.string(), z.unknown()),
     baseRevision: z.number().int().positive().optional(),
   }),
@@ -107,12 +112,14 @@ const ActionSchema = z.discriminatedUnion("action", [RecordActionSchema, ViewAct
 
 export async function GET(request: Request) {
   try {
-    await ensureDefaultDatabase();
-    const sourceId = new URL(request.url).searchParams.get("sourceId") || SOURCE_ID;
+    const { workspaceId } = await requireWorkspace(request);
+    const defaultSourceId = await ensureDefaultDatabase(workspaceId);
+    const requestedSourceId = new URL(request.url).searchParams.get("sourceId");
+    const sourceId = requestedSourceId ? scopedResourceId(workspaceId, requestedSourceId) : defaultSourceId;
     const source = await env.DB.prepare(
       `SELECT id, name, schema_markdown AS schemaMarkdown, revision, updated_at AS updatedAt
-       FROM data_sources WHERE id = ? AND workspace_id = 'default'`,
-    ).bind(sourceId).first();
+       FROM data_sources WHERE id = ? AND workspace_id = ?`,
+    ).bind(sourceId, workspaceId).first();
     if (!source) return Response.json({ error: "data_source_not_found" }, { status: 404 });
     const [views, records] = await Promise.all([
       env.DB.prepare(
@@ -131,18 +138,25 @@ export async function GET(request: Request) {
       records: records.results.map((record) => ({ ...record, properties: safeJson(record.propertiesJson, {}), propertiesJson: undefined })),
     });
   } catch (error) {
+    const auth = authErrorResponse(error);
+    if (auth) return auth;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load database" }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
-    await ensureDefaultDatabase();
+    const { workspaceId } = await requireWorkspace(request, { write: true });
+    await ensureDefaultDatabase(workspaceId);
     const parsed = ActionSchema.safeParse(await request.json());
     if (!parsed.success) return Response.json({ error: "invalid_database_action", details: parsed.error.flatten() }, { status: 400 });
     if (parsed.data.action === "upsert-record") {
-      const { sourceId, record } = parsed.data;
-      const id = record.id ?? crypto.randomUUID();
+      const { record } = parsed.data;
+      const sourceId = scopedResourceId(workspaceId, parsed.data.sourceId);
+      const source = await env.DB.prepare(`SELECT id FROM data_sources WHERE id = ? AND workspace_id = ? LIMIT 1`)
+        .bind(sourceId, workspaceId).first();
+      if (!source) return Response.json({ error: "data_source_not_found" }, { status: 404 });
+      const id = record.id ? scopedResourceId(workspaceId, record.id) : crypto.randomUUID();
       const existing = await env.DB.prepare(
         `SELECT revision FROM database_records WHERE id = ? AND data_source_id = ?`,
       ).bind(id, sourceId).first<{ revision: number }>();
@@ -166,9 +180,14 @@ export async function POST(request: Request) {
     }
 
     const { view } = parsed.data;
+    const sourceId = scopedResourceId(workspaceId, view.sourceId);
+    const source = await env.DB.prepare(`SELECT id FROM data_sources WHERE id = ? AND workspace_id = ? LIMIT 1`)
+      .bind(sourceId, workspaceId).first();
+    if (!source) return Response.json({ error: "data_source_not_found" }, { status: 404 });
+    const viewId = scopedResourceId(workspaceId, view.id);
     const existing = await env.DB.prepare(
       `SELECT revision FROM database_views WHERE id = ? AND data_source_id = ?`,
-    ).bind(view.id, view.sourceId).first<{ revision: number }>();
+    ).bind(viewId, sourceId).first<{ revision: number }>();
     if (existing && view.baseRevision !== undefined && existing.revision !== view.baseRevision) {
       return Response.json({ error: "revision_conflict", currentRevision: existing.revision }, { status: 409 });
     }
@@ -184,29 +203,40 @@ export async function POST(request: Request) {
          config_json = excluded.config_json,
          revision = excluded.revision,
          updated_at = CURRENT_TIMESTAMP`,
-    ).bind(view.id, view.sourceId, view.name, view.type, viewConfigMarkdown(view.type, view.config), JSON.stringify(view.config), nextRevision).run();
-    return Response.json({ id: view.id, revision: nextRevision, updatedAt: new Date().toISOString() });
+    ).bind(viewId, sourceId, view.name, view.type, viewConfigMarkdown(view.type, view.config), JSON.stringify(view.config), nextRevision).run();
+    return Response.json({ id: viewId, revision: nextRevision, updatedAt: new Date().toISOString() });
   } catch (error) {
+    const auth = authErrorResponse(error);
+    if (auth) return auth;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to save database" }, { status: 500 });
   }
 }
 
 export async function DELETE(request: Request) {
   try {
-    await ensureDefaultDatabase();
+    const { workspaceId } = await requireWorkspace(request, { write: true });
+    const defaultSourceId = await ensureDefaultDatabase(workspaceId);
     const url = new URL(request.url);
     const id = url.searchParams.get("id")?.trim();
-    const sourceId = url.searchParams.get("sourceId")?.trim() || SOURCE_ID;
+    const sourceId = url.searchParams.get("sourceId")?.trim()
+      ? scopedResourceId(workspaceId, url.searchParams.get("sourceId")!.trim())
+      : defaultSourceId;
     if (!id) return Response.json({ error: "record_id_required" }, { status: 400 });
+    const source = await env.DB.prepare(`SELECT id FROM data_sources WHERE id = ? AND workspace_id = ? LIMIT 1`)
+      .bind(sourceId, workspaceId).first();
+    if (!source) return Response.json({ error: "data_source_not_found" }, { status: 404 });
+    const storedId = scopedResourceId(workspaceId, id);
     const record = await env.DB.prepare(
       `SELECT id FROM database_records WHERE id = ? AND data_source_id = ?`,
-    ).bind(id, sourceId).first();
+    ).bind(storedId, sourceId).first();
     if (!record) return Response.json({ error: "record_not_found" }, { status: 404 });
     await env.DB.prepare(
       `DELETE FROM database_records WHERE id = ? AND data_source_id = ?`,
-    ).bind(id, sourceId).run();
+    ).bind(storedId, sourceId).run();
     return Response.json({ id, deleted: true });
   } catch (error) {
+    const auth = authErrorResponse(error);
+    if (auth) return auth;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to delete database record" }, { status: 500 });
   }
 }

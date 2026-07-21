@@ -20,7 +20,7 @@ Block editor / Database views / Agent work / Code / Connectors
 - `agent_runs`：目标、计划、状态、父子 Agent 关系、模型与审批状态；详细过程写回 Markdown 日志。
 - `connector_outbox` + `connector_outbox_details`：待审阅/已批准/发送中/已发送/失败/驳回的消息及目标。消息正文仍是 Markdown。
 - `connector_delivery_attempts`：不可变的成功/失败 Markdown 回执，不保存凭据。
-- `connector_credentials`：AES-256-GCM 加密的 OAuth 凭据，只用于 OneDrive 等需要轮换令牌的连接器。
+- `connector_credentials`：按工作区使用 AES-256-GCM 加密的 OAuth、模型和社交连接凭据；浏览器只能读取配置状态，不能读回秘密值。
 - `connector_sync_events`：OneDrive 等外部存储的同步回执。
 - `connector_sync_conflicts`：同一修订出现不同内容时保存 App Cloud 与 OneDrive 两份 Markdown，直到用户明确选择。
 - `workspace_tombstones`：记录删除的实体、修订和时间，使删除操作也能跨设备传播。
@@ -37,7 +37,7 @@ Block editor / Database views / Agent work / Code / Connectors
 6. 删除写入 Markdown 墓碑；较新的修改可以复活条目，较新的删除会从另一端移除条目。
 7. OneDrive 同步先读取远端 v2 快照，按父子依赖和 revision 合并，再以读取到的 eTag 条件写回；并发改写会重试，不静默覆盖。
 
-App Cloud 由 D1/R2 提供跨设备主副本；OneDrive 由用户明确触发双向 Markdown 合并。v1 旧快照在首次 v2 同步前会另存归档。当前附件字节仍由 App Cloud R2 管理，OneDrive 文件包含附件完整性清单；把附件字节镜像到用户云盘仍是后续工作。
+App Cloud 由 D1/R2 提供跨设备主副本；OneDrive 由用户明确触发双向 Markdown 合并。v1 旧快照在首次 v2 同步前会另存归档。附件字节以 SHA-256 内容寻址方式在 App Cloud R2 与 OneDrive 间校验镜像，新设备可按 Markdown 清单恢复缺失附件。
 
 ## `.sophie` v1
 

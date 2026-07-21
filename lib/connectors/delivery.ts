@@ -52,7 +52,7 @@ async function sendTelegram(request: DeliveryRequest, bindings: ConnectorBinding
   return typeof result.message_id === "number" ? String(result.message_id) : undefined;
 }
 
-function validateWeChatWebhook(rawUrl: string) {
+export function validateWeChatWebhook(rawUrl: string) {
   const url = new URL(rawUrl);
   if (url.protocol !== "https:" || url.hostname !== "qyapi.weixin.qq.com" || url.pathname !== "/cgi-bin/webhook/send" || !url.searchParams.get("key")) {
     throw new ConnectorConfigurationError("WECHAT_WORK_WEBHOOK_URL 必须是企业微信官方机器人 Webhook");

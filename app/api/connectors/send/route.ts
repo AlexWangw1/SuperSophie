@@ -7,6 +7,7 @@ import {
   deliveryReceiptMarkdown,
 } from "../../../../lib/connectors/delivery";
 import { ConnectorDeliveryError, SOCIAL_CHANNELS, type QqTargetKind } from "../../../../lib/connectors/types";
+import { workspaceSocialBindings } from "../../../../lib/connectors/workspace-social";
 import { authErrorResponse, requireWorkspace } from "../../../../lib/auth";
 
 const SendSchema = z.object({ id: z.string().uuid() });
@@ -43,13 +44,14 @@ export async function POST(request: Request) {
     if (!claim.meta?.changes) return Response.json({ error: "消息正在发送或已被处理" }, { status: 409 });
 
     const metadata = JSON.parse(outbox.metadataJson || "{}") as { targetKind?: QqTargetKind };
+    const effectiveBindings = (await workspaceSocialBindings(env.DB, workspaceId, env)).bindings;
     const receipt = await deliverConnectorMessage({
       outboxId: outbox.id,
       channel: outbox.channel,
       target: outbox.target,
       markdown: outbox.payloadMarkdown,
       metadata,
-    }, env);
+    }, effectiveBindings);
     const receiptMarkdown = deliveryReceiptMarkdown(receipt);
     await env.DB.batch([
       env.DB.prepare(

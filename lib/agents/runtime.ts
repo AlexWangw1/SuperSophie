@@ -4,6 +4,7 @@ import { TeamPlanSchema } from "./types";
 import {
   createModelRunner,
   getPublicModelCatalog,
+  redactModelSecrets,
   resolveModelProfile,
 } from "./model-catalog";
 
@@ -31,12 +32,9 @@ function cleanGoal(message: string) {
   return message.replace(/^\/(team|agent)\s*/i, "").trim();
 }
 
-function sanitizeError(error: unknown) {
+function sanitizeError(error: unknown, bindings: RuntimeBindings) {
   const message = error instanceof Error ? error.message : "未知模型错误";
-  return message
-    .replace(/sk-[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
-    .slice(0, 600);
+  return redactModelSecrets(message, bindings).slice(0, 600);
 }
 
 async function runChat(request: ChatRequest, bindings: RuntimeBindings): Promise<SophieRunResult> {
@@ -102,7 +100,7 @@ async function runSpecialist(
     );
     return { ...plan, id, modelId: profile.id, status: "completed", output: String(result.finalOutput ?? "") };
   } catch (error) {
-    return { ...plan, id, status: "failed", output: `执行失败：${sanitizeError(error)}` };
+    return { ...plan, id, status: "failed", output: `执行失败：${sanitizeError(error, bindings)}` };
   }
 }
 

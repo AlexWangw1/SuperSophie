@@ -1,9 +1,10 @@
 import { env } from "cloudflare:workers";
 import { ensureSchema } from "../../../db/ensure";
-import { ModelNotConfiguredError } from "../../../lib/agents/model-catalog";
+import { ModelNotConfiguredError, redactModelSecrets } from "../../../lib/agents/model-catalog";
 import { buildAgentRunMarkdown, buildConversationMarkdown } from "../../../lib/agents/run-markdown";
 import { runSophie, shouldUseTeam } from "../../../lib/agents/runtime";
 import { ChatRequestSchema, type SophieRunResult } from "../../../lib/agents/types";
+import { workspaceModelBindings } from "../../../lib/agents/workspace-models";
 import { authErrorResponse, requireWorkspace } from "../../../lib/auth";
 import { scopedResourceId } from "../../../lib/workspace-resource";
 
@@ -22,12 +23,9 @@ function titleFromMessage(message: string) {
   return title.slice(0, 48) || "与 Sophie 的对话";
 }
 
-function publicError(error: unknown) {
+function publicError(error: unknown, runtimeBindings: Record<string, unknown> = bindings) {
   const message = error instanceof Error ? error.message : "Sophie 暂时无法完成这次请求。";
-  return message
-    .replace(/sk-[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
-    .slice(0, 600);
+  return redactModelSecrets(message, runtimeBindings).slice(0, 600);
 }
 
 async function addMessage(conversationId: string, role: "user" | "assistant", content: string, runId?: string) {
@@ -166,6 +164,7 @@ export async function POST(request: Request) {
   const isTeamRun = input.mode === "team" || (input.mode === "auto" && shouldUseTeam(input.message));
   const runId = isTeamRun ? crypto.randomUUID() : undefined;
   let workspaceId: string | undefined;
+  let runtimeBindings = bindings;
 
   try {
     const context = await requireWorkspace(request, { write: true });
@@ -180,7 +179,8 @@ export async function POST(request: Request) {
     await addMessage(conversationId, "user", input.message, runId);
     if (runId) await startAgentRun(workspaceId, runId, input.message, input.modelId ?? "auto");
 
-    const result = await runSophie(input, bindings);
+    runtimeBindings = (await workspaceModelBindings(env.DB, workspaceId, bindings)).bindings;
+    const result = await runSophie(input, runtimeBindings);
     const assistantMessageId = await addMessage(conversationId, "assistant", result.reply, runId);
     await env.DB.prepare(
       `UPDATE conversations SET model_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?`,
@@ -203,7 +203,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const auth = authErrorResponse(error);
     if (auth) return auth;
-    const message = publicError(error);
+    const message = publicError(error, runtimeBindings);
     if (runId && workspaceId) await failAgentRun(workspaceId, runId, conversationId, input.message, createdAt, message).catch(() => undefined);
     if (workspaceId) await addMessage(conversationId, "assistant", message, runId).catch(() => undefined);
     if (workspaceId) await syncConversationDocument(workspaceId, conversationId, title).catch(() => undefined);

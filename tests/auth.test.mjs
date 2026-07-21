@@ -70,6 +70,8 @@ test("keeps session tokens out of browser storage and stores Markdown security e
     readFile(new URL("../db/ensure.ts", import.meta.url), "utf8"),
   ]);
   assert.doesNotMatch(gate, /localStorage\.(setItem|getItem)/);
+  assert.match(gate, /创建新访问密钥/);
+  assert.match(gate, /navigator\.clipboard\.writeText\(newKey\)/);
   assert.match(auth, /HttpOnly; SameSite=Strict/);
   assert.match(auth, /kind: security-event/);
   for (const table of ["users", "workspaces", "workspace_members", "sessions", "security_events", "asset_ownership", "connector_sync_conflicts", "workspace_tombstones"]) {

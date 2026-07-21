@@ -9,7 +9,7 @@ review → approved → sending → sent
    └──── rejected       └──── failed → approved（重新审核）
 ```
 
-条件更新保证同一条已批准消息只能被一个发送请求认领。每次成功或失败都会生成 Markdown 回执；已发送和发送中的审计记录不能删除。模型密钥、Bot Token、Webhook key 和 OAuth 令牌不进入回执、页面 Markdown、OneDrive 快照或 `.sophie` 文件。
+条件更新保证同一条已批准消息只能被一个发送请求认领。每次成功或失败都会生成 Markdown 回执；已发送和发送中的审计记录不能删除。模型密钥、Bot Token、Webhook key 和 OAuth 令牌不进入回执、页面 Markdown、OneDrive 快照或 `.sophie` 文件。Telegram、企业微信和 QQ 凭据既可由部署环境提供，也可在连接器页面按工作区加密保存；工作区配置优先，浏览器永远读不回明文。
 
 ## Telegram
 
@@ -73,6 +73,8 @@ $connectorKeyBytes = [byte[]]::new(32)
 [System.Security.Cryptography.RandomNumberGenerator]::Fill($connectorKeyBytes)
 [Convert]::ToBase64String($connectorKeyBytes)
 ```
+
+同一个 `CONNECTOR_ENCRYPTION_KEY` 同时保护 OneDrive OAuth、工作区模型密钥和社交机器人凭据。已有密文后不要直接轮换此主密钥；应先实现重加密迁移，否则旧凭据将无法解密。
 
 授权采用 OAuth 2.0 authorization code + PKCE，申请 `offline_access Files.ReadWrite User.Read`。访问令牌和刷新令牌使用 AES-256-GCM 加密后保存在 `connector_credentials`，过期时会轮换刷新令牌。
 

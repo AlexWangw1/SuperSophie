@@ -227,22 +227,31 @@ type ModelProfile = {
   localOnly?: boolean;
 };
 
+type PublicModelSettings = {
+  providers: Record<"openai" | "openrouter" | "ollama", { configured: boolean; source: "workspace" | "environment" | null }>;
+  customModels: Array<{ id: string; label: string; provider: string; model: string; capabilities: string[]; baseURL: string; useResponses: boolean; hasKey: boolean }>;
+  vaultAvailable: boolean;
+};
+
 function useModelCatalog() {
   const [models, setModels] = useState<ModelProfile[]>([]);
   const [defaultModelId, setDefaultModelId] = useState("openai:gpt-5.6");
-  useEffect(() => {
-    fetch("/api/models")
+  const [settings, setSettings] = useState<PublicModelSettings>();
+  const refresh = useCallback(async () => {
+    await fetch("/api/models")
       .then(async (response) => {
         if (!response.ok) throw new Error("model catalog unavailable");
-        return response.json() as Promise<{ models: ModelProfile[]; defaultModelId?: string }>;
+        return response.json() as Promise<{ models: ModelProfile[]; defaultModelId?: string; settings?: PublicModelSettings }>;
       })
       .then((result) => {
         setModels(result.models);
         if (result.defaultModelId) setDefaultModelId(result.defaultModelId);
+        setSettings(result.settings);
       })
       .catch(() => undefined);
   }, []);
-  return { models, defaultModelId };
+  useEffect(() => { void refresh(); }, [refresh]);
+  return { models, defaultModelId, settings, refresh };
 }
 
 type SpeechRecognitionLike = {
@@ -1466,14 +1475,50 @@ type AgentWorkResult = {
   specialists?: Array<{ id: string; name: string; role: string; modelId: string; deliverable: string; status: string; output: string }>;
 };
 
+function ModelSettingsModal({ settings, onClose, onChanged }: { settings?: PublicModelSettings; onClose: () => void; onChanged: () => Promise<void> }) {
+  const [providerValues, setProviderValues] = useState({ openai: "", openrouter: "", ollama: "" });
+  const [custom, setCustom] = useState({ id: "", label: "", provider: "Custom", model: "", baseURL: "", capabilities: "", apiKey: "", useResponses: false });
+  const [busy, setBusy] = useState("");
+  const [feedback, setFeedback] = useState(settings?.vaultAvailable ? "已保存的密钥不会再次显示。" : "部署管理员需要先设置 CONNECTOR_ENCRYPTION_KEY。 ");
+  const request = async (url: string, init: RequestInit, key: string) => {
+    setBusy(key); setFeedback("");
+    try {
+      const response = await fetch(url, init);
+      if (!response.ok) throw new Error(await responseError(response));
+      await onChanged();
+      setFeedback("模型配置已安全保存；新请求会立即使用。 ");
+    } catch (error) { setFeedback(error instanceof Error ? error.message : "模型配置失败"); }
+    finally { setBusy(""); }
+  };
+  const saveProvider = async (provider: "openai" | "openrouter" | "ollama") => {
+    const value = providerValues[provider].trim();
+    if (!value) return;
+    await request("/api/models", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "set-provider", provider, value }) }, provider);
+    setProviderValues((current) => ({ ...current, [provider]: "" }));
+  };
+  const removeProvider = (provider: "openai" | "openrouter" | "ollama") => request(`/api/models?target=${provider}`, { method: "DELETE" }, provider);
+  const saveCustom = async () => {
+    const profile: Record<string, unknown> = {
+      id: custom.id.trim(), label: custom.label.trim(), provider: custom.provider.trim(), model: custom.model.trim(),
+      baseURL: custom.baseURL.trim(), capabilities: custom.capabilities.split(",").map((item) => item.trim()).filter(Boolean), useResponses: custom.useResponses,
+    };
+    if (custom.apiKey.trim()) profile.apiKey = custom.apiKey.trim();
+    await request("/api/models", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "upsert-custom", profile }) }, "custom");
+    setCustom({ id: "", label: "", provider: "Custom", model: "", baseURL: "", capabilities: "", apiKey: "", useResponses: false });
+  };
+  const editCustom = (profile: PublicModelSettings["customModels"][number]) => setCustom({ id: profile.id, label: profile.label, provider: profile.provider, model: profile.model, baseURL: profile.baseURL, capabilities: profile.capabilities.join(", "), apiKey: "", useResponses: profile.useResponses });
+  return <div className="secret-modal-backdrop" onMouseDown={onClose}><section className="secret-modal model-secret-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><span>MODEL VAULT</span><h2>工作区模型与密钥</h2><p>AES-256-GCM 加密保存；浏览器只能读取“是否已配置”。</p></div><button onClick={onClose}>×</button></header><div className="secret-modal-body"><section className="provider-secret-list">{(["openai", "openrouter", "ollama"] as const).map((provider) => { const status = settings?.providers[provider]; const isUrl = provider === "ollama"; return <article key={provider}><div><strong>{provider === "openrouter" ? "OpenRouter" : provider === "openai" ? "OpenAI" : "Ollama / 自托管"}</strong><small>{status?.configured ? `已配置 · ${status.source === "workspace" ? "当前工作区" : "部署环境"}` : "未配置"}</small></div><input type={isUrl ? "url" : "password"} autoComplete="new-password" value={providerValues[provider]} onChange={(event) => setProviderValues((current) => ({ ...current, [provider]: event.target.value }))} placeholder={isUrl ? "公开 HTTPS OpenAI-compatible 地址" : "粘贴新的 API key"} /><button disabled={busy === provider || !providerValues[provider].trim() || !settings?.vaultAvailable} onClick={() => void saveProvider(provider)}>保存</button>{status?.source === "workspace" && <button className="danger-text" disabled={busy === provider} onClick={() => void removeProvider(provider)}>移除</button>}</article>; })}</section><section className="custom-model-editor"><header><div><strong>自定义 OpenAI-compatible 模型</strong><small>只允许公开 HTTPS endpoint，阻止本机和私有网段地址。</small></div></header>{settings?.customModels.map((profile) => <article className="custom-model-row" key={profile.id}><div><strong>{profile.label}</strong><small>{profile.id} · {profile.model} · {profile.hasKey ? "有密钥" : "无密钥"}</small></div><button onClick={() => editCustom(profile)}>编辑</button><button className="danger-text" disabled={busy === profile.id} onClick={() => void request(`/api/models?target=custom&id=${encodeURIComponent(profile.id)}`, { method: "DELETE" }, profile.id)}>删除</button></article>)}<div className="custom-model-form"><input value={custom.id} onChange={(event) => setCustom({ ...custom, id: event.target.value })} placeholder="ID，例如 my:model" /><input value={custom.label} onChange={(event) => setCustom({ ...custom, label: event.target.value })} placeholder="显示名称" /><input value={custom.provider} onChange={(event) => setCustom({ ...custom, provider: event.target.value })} placeholder="提供商" /><input value={custom.model} onChange={(event) => setCustom({ ...custom, model: event.target.value })} placeholder="模型名" /><input className="wide" type="url" value={custom.baseURL} onChange={(event) => setCustom({ ...custom, baseURL: event.target.value })} placeholder="https://example.com/v1" /><input className="wide" value={custom.capabilities} onChange={(event) => setCustom({ ...custom, capabilities: event.target.value })} placeholder="能力标签，用逗号分隔" /><input className="wide" type="password" autoComplete="new-password" value={custom.apiKey} onChange={(event) => setCustom({ ...custom, apiKey: event.target.value })} placeholder="API key（编辑时留空会保留原密钥）" /><label className="wide"><input type="checkbox" checked={custom.useResponses} onChange={(event) => setCustom({ ...custom, useResponses: event.target.checked })} />使用 Responses API</label><button className="primary-small" disabled={busy === "custom" || !settings?.vaultAvailable || !custom.id.trim() || !custom.label.trim() || !custom.model.trim() || !custom.baseURL.trim()} onClick={() => void saveCustom()}>保存自定义模型</button></div></section></div><footer><span>{feedback}</span><button onClick={onClose}>完成</button></footer></section></div>;
+}
+
 function AgentsView() {
   const [goal, setGoal] = useState("调研并制定 SuperSophie 下一阶段的可靠实施计划");
   const [runState, setRunState] = useState<"idle" | "running" | "completed" | "failed">("idle");
   const [result, setResult] = useState<AgentWorkResult>();
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState("");
-  const { models, defaultModelId } = useModelCatalog();
+  const { models, defaultModelId, settings, refresh } = useModelCatalog();
   const [modelId, setModelId] = useState("");
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const activeModelId = modelId || defaultModelId;
 
   const runTeam = async () => {
@@ -1532,7 +1577,8 @@ function AgentsView() {
           </div>
         </div>
       </section>
-      <section className="model-strip"><div><span className="section-kicker">MODEL ROUTER</span><h3>多模型路由</h3><p>内置 OpenAI、OpenRouter、Ollama，并可通过环境配置添加 OpenAI-compatible 模型。</p></div>{models.slice(0, 4).map((model) => <article key={model.id}><span className={`provider-mark ${model.provider.toLowerCase()}`}>{model.provider[0]}</span><div><strong>{model.label}</strong><small>{model.capabilities.join(" · ")}</small></div><StatusDot tone={model.available ? "green" : "gray"} /></article>)}<button className="model-settings">密钥保存在环境变量中</button></section>
+      <section className="model-strip"><div><span className="section-kicker">MODEL ROUTER</span><h3>多模型路由</h3><p>内置 OpenAI、OpenRouter、Ollama，并支持工作区自定义 OpenAI-compatible 模型。</p></div>{models.slice(0, 4).map((model) => <article key={model.id}><span className={`provider-mark ${model.provider.toLowerCase()}`}>{model.provider[0]}</span><div><strong>{model.label}</strong><small>{model.capabilities.join(" · ")}</small></div><StatusDot tone={model.available ? "green" : "gray"} /></article>)}<button className="model-settings" onClick={() => setModelSettingsOpen(true)}>管理模型与加密密钥</button></section>
+      {modelSettingsOpen && <ModelSettingsModal settings={settings} onClose={() => setModelSettingsOpen(false)} onChanged={refresh} />}
     </main>
   );
 }
@@ -1717,7 +1763,7 @@ function CodeView() {
 
 type ConnectorId = "appcloud" | "onedrive" | "wechat" | "qq" | "telegram";
 type SocialChannel = "wechat" | "qq" | "telegram";
-type ConnectorState = { configured: boolean; connected: boolean; label?: string; accountLabel?: string | null; openConflicts?: number; lastSync?: { status: string; remotePath: string; createdAt: string } | null };
+type ConnectorState = { configured: boolean; connected: boolean; source?: "workspace" | "environment" | null; label?: string; accountLabel?: string | null; openConflicts?: number; lastSync?: { status: string; remotePath: string; createdAt: string } | null };
 type OutboxMessage = { id: string; channel: SocialChannel; target: string; payloadMarkdown: string; status: string; createdAt: string; lastAttemptMarkdown?: string | null };
 type SyncConflict = { id: string; entityKind: string; entityId: string; detailsMarkdown: string; createdAt: string };
 
@@ -1738,6 +1784,39 @@ async function responseError(response: Response) {
   catch { return `请求失败（${response.status}）`; }
 }
 
+function SocialSecretModal({ provider, state, onClose, onChanged }: { provider: SocialChannel; state?: ConnectorState; onClose: () => void; onChanged: () => Promise<void> }) {
+  const [telegramToken, setTelegramToken] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [qqAppId, setQqAppId] = useState("");
+  const [qqSecret, setQqSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(state?.source === "workspace" ? "已保存的凭据不会再次显示。" : state?.source === "environment" ? "当前使用部署环境凭据；保存后会仅为此工作区覆盖。" : "输入官方机器人凭据。 ");
+  const save = async () => {
+    setBusy(true); setFeedback("");
+    try {
+      const credentials = provider === "telegram" ? { token: telegramToken } : provider === "wechat" ? { webhookUrl } : { appId: qqAppId, clientSecret: qqSecret };
+      const response = await fetch("/api/connectors", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider, credentials }) });
+      if (!response.ok) throw new Error(await responseError(response));
+      setTelegramToken(""); setWebhookUrl(""); setQqAppId(""); setQqSecret("");
+      await onChanged(); setFeedback("凭据已加密保存到当前工作区。 ");
+    } catch (error) { setFeedback(error instanceof Error ? error.message : "连接器凭据保存失败"); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!confirm("删除当前工作区保存的连接凭据？部署环境凭据不会被删除。")) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/connectors?provider=${provider}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(await responseError(response));
+      await onChanged(); setFeedback("工作区凭据已删除。 ");
+    } catch (error) { setFeedback(error instanceof Error ? error.message : "连接器凭据删除失败"); }
+    finally { setBusy(false); }
+  };
+  const ready = provider === "telegram" ? telegramToken.trim() : provider === "wechat" ? webhookUrl.trim() : qqAppId.trim() && qqSecret.trim();
+  const title = provider === "telegram" ? "Telegram Bot" : provider === "wechat" ? "企业微信机器人" : "QQ 官方机器人";
+  return <div className="secret-modal-backdrop" onMouseDown={onClose}><section className="secret-modal social-secret-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><span>SOCIAL VAULT</span><h2>{title}</h2><p>AES-256-GCM 加密；不会进入消息回执、Markdown 或 OneDrive。</p></div><button onClick={onClose}>×</button></header><div className="secret-modal-body">{provider === "telegram" && <label>Bot Token<input type="password" autoComplete="new-password" value={telegramToken} onChange={(event) => setTelegramToken(event.target.value)} placeholder="123456789:AA…" /></label>}{provider === "wechat" && <label>官方群机器人 Webhook<input type="password" autoComplete="new-password" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…" /></label>}{provider === "qq" && <><label>Bot App ID<input value={qqAppId} onChange={(event) => setQqAppId(event.target.value)} /></label><label>Bot Client Secret<input type="password" autoComplete="new-password" value={qqSecret} onChange={(event) => setQqSecret(event.target.value)} /></label></>}<div className="secret-safety-note"><strong>{state?.connected ? `当前已连接 · ${state.source === "workspace" ? "工作区凭据" : "部署环境"}` : "尚未连接"}</strong><span>发送仍需进入审核队列并由人类批准。</span></div></div><footer><span>{feedback}</span><div>{state?.source === "workspace" && <button className="danger-text" disabled={busy} onClick={() => void remove()}>删除工作区凭据</button>}<button className="primary-small" disabled={busy || !ready} onClick={() => void save()}>{busy ? "处理中…" : "加密保存"}</button></div></footer></section></div>;
+}
+
 function ConnectorsView() {
   const [connectors, setConnectors] = useState<Partial<Record<ConnectorId, ConnectorState>>>({});
   const [messages, setMessages] = useState<OutboxMessage[]>([]);
@@ -1749,6 +1828,7 @@ function ConnectorsView() {
   const [feedback, setFeedback] = useState("尚未加入队列");
   const [busy, setBusy] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [credentialEditor, setCredentialEditor] = useState<SocialChannel>();
 
   const refresh = useCallback(async () => {
     try {
@@ -1792,12 +1872,7 @@ function ConnectorsView() {
       await refresh();
       return;
     }
-    const requirements: Record<Exclude<ConnectorId, "appcloud" | "onedrive">, string> = {
-      telegram: "在服务端设置 TELEGRAM_BOT_TOKEN；目标可填写 chat_id 或 @频道名。",
-      wechat: "在服务端设置企业微信官方机器人 WECHAT_WORK_WEBHOOK_URL。",
-      qq: "在服务端设置 QQ_BOT_APP_ID 与 QQ_BOT_CLIENT_SECRET。",
-    };
-    setFeedback(state?.connected ? `${id} 已通过服务端凭据连接` : requirements[id]);
+    setCredentialEditor(id);
   };
 
   const queue = async () => {
@@ -1898,7 +1973,7 @@ function ConnectorsView() {
           const state = connectors[item.id];
           const connected = Boolean(state?.connected);
           const stateText = connected ? (state?.accountLabel || state?.label || "已连接") : state?.configured ? "等待授权" : "需要配置";
-          return <article key={item.id}><span className={`connector-logo ${item.tone}`}>{item.icon}</span><div><h3>{item.name}</h3><p>{item.desc}</p><span className={connected ? "connected" : "needs-config"}><StatusDot tone={connected ? "green" : "gray"} />{stateText}</span></div><button onClick={() => void configure(item.id)}>{item.id === "appcloud" ? "已启用" : item.id === "onedrive" && connected ? "断开" : connected ? "查看" : "配置"}</button></article>;
+          return <article key={item.id}><span className={`connector-logo ${item.tone}`}>{item.icon}</span><div><h3>{item.name}</h3><p>{item.desc}</p><span className={connected ? "connected" : "needs-config"}><StatusDot tone={connected ? "green" : "gray"} />{stateText}</span></div><button onClick={() => void configure(item.id)}>{item.id === "appcloud" ? "已启用" : item.id === "onedrive" && connected ? "断开" : connected ? "管理" : "配置"}</button></article>;
         })}
       </section>
       <section className="connector-lower">
@@ -1931,6 +2006,7 @@ function ConnectorsView() {
         {messages.length === 0 && <p className="empty-state">还没有待审核消息。</p>}
         {messages.map((item) => <article key={item.id}><div className="outbox-meta"><strong>{item.channel.toUpperCase()}</strong><span>{item.target}</span><i className={`outbox-status ${item.status}`}>{statusLabels[item.status] || item.status}</i></div><p>{item.payloadMarkdown}</p>{item.lastAttemptMarkdown && item.status === "failed" && <details><summary>查看失败记录</summary><pre>{item.lastAttemptMarkdown}</pre></details>}<footer>{item.status === "review" && <><button onClick={() => void review(item.id, "reject")}>驳回</button><button className="primary-small" disabled={busy === item.id} onClick={() => void review(item.id, "approve", true)}>批准并发送</button></>}{item.status === "approved" && <button className="primary-small" disabled={busy === item.id} onClick={() => void sendApproved(item.id)}>发送</button>}{item.status === "failed" && <button className="primary-small" disabled={busy === item.id} onClick={() => void review(item.id, "approve", true)}>重新批准并发送</button>}{item.status === "rejected" && <button disabled={busy === item.id} onClick={() => void removeMessage(item.id)}>删除记录</button>}</footer></article>)}
       </section>
+      {credentialEditor && <SocialSecretModal provider={credentialEditor} state={connectors[credentialEditor]} onClose={() => setCredentialEditor(undefined)} onChanged={refresh} />}
     </main>
   );
 }

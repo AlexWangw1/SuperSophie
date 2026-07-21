@@ -4,6 +4,26 @@ import type { PublicModelProfile, ServerModelProfile } from "./types";
 
 type RuntimeBindings = Record<string, unknown>;
 
+export function redactModelSecrets(message: string, bindings: RuntimeBindings) {
+  let redacted = message;
+  const names = new Set([...Object.keys(bindings), "OPENAI_API_KEY", "OPENROUTER_API_KEY", "CONNECTOR_ENCRYPTION_KEY"]);
+  const catalogSource = bindings.SOPHIE_MODEL_CATALOG_JSON;
+  if (typeof catalogSource === "string") {
+    try {
+      const profiles = JSON.parse(catalogSource);
+      if (Array.isArray(profiles)) for (const profile of profiles) if (profile && typeof profile === "object" && typeof profile.apiKeyEnv === "string") names.add(profile.apiKeyEnv);
+    } catch { /* Invalid catalogs are ignored by the model resolver too. */ }
+  }
+  for (const name of names) {
+    const value = bindings[name];
+    if (!/(?:KEY|TOKEN|SECRET)(?:_|$)/i.test(name) || typeof value !== "string" || value.length < 8) continue;
+    redacted = redacted.split(value).join("[REDACTED]");
+  }
+  return redacted
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
+}
+
 const CustomProfileSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9:_./-]{1,119}$/i),
   label: z.string().min(1).max(80),

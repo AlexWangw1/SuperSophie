@@ -23,7 +23,7 @@ function request(channel, target = "123456") {
   return { outboxId: "00000000-0000-4000-8000-000000000001", channel, target, markdown: "**发布完成**" };
 }
 
-test("connector status only reports configured server credentials", () => {
+test("connector status only reports whether effective credentials are configured", () => {
   assert.deepEqual(getSocialConnectorStatus({}), { telegram: false, wechat: false, qq: false });
   assert.deepEqual(getSocialConnectorStatus({
     TELEGRAM_BOT_TOKEN: "token",

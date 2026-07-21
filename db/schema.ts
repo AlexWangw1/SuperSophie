@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -149,6 +149,22 @@ export const databaseRecords = sqliteTable("database_records", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const databaseTemplates = sqliteTable("database_templates", {
+  id: text("id").primaryKey(),
+  dataSourceId: text("data_source_id").notNull(),
+  name: text("name").notNull(),
+  icon: text("icon").notNull().default("✦"),
+  description: text("description").notNull().default(""),
+  titleTemplate: text("title_template").notNull().default("未命名"),
+  templateMarkdown: text("template_markdown").notNull().default(""),
+  propertiesJson: text("properties_json").notNull().default("{}"),
+  revision: integer("revision").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("database_templates_source_updated_idx").on(table.dataSourceId, table.updatedAt),
+]);
 
 export const codeProjects = sqliteTable("code_projects", {
   id: text("id").primaryKey(),

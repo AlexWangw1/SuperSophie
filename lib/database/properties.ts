@@ -303,6 +303,7 @@ export function computeDatabaseProperties(input: {
   raw: Record<string, unknown>;
   record: { id: string; title: string; createdAt?: string; updatedAt?: string; createdBy?: string; updatedBy?: string };
   recordsById?: Map<string, { title: string; properties: Record<string, unknown> }>;
+  recordsBySourceId?: Map<string, Map<string, { title: string; properties: Record<string, unknown> }>>;
 }) {
   const result: Record<string, unknown> = { ...input.raw, title: input.record.title };
   for (const property of input.schema.properties) {
@@ -315,7 +316,11 @@ export function computeDatabaseProperties(input: {
       result[property.id] = `${property.idPrefix || "ID"}-${numericPart}`;
     } else if (property.type === "rollup" && property.rollup) {
       const relationIds = Array.isArray(result[property.rollup.relationPropertyId]) ? result[property.rollup.relationPropertyId] as unknown[] : [];
-      const values = relationIds.map(String).map((id) => input.recordsById?.get(id)).filter(Boolean).map((record) => property.rollup?.targetPropertyId === "title" ? record?.title : record?.properties[property.rollup!.targetPropertyId]);
+      const relation = input.schema.properties.find((candidate) => candidate.id === property.rollup?.relationPropertyId && candidate.type === "relation");
+      const targetRecords = relation?.relation?.dataSourceId
+        ? input.recordsBySourceId?.get(relation.relation.dataSourceId) ?? input.recordsById
+        : input.recordsById;
+      const values = relationIds.map(String).map((id) => targetRecords?.get(id)).filter(Boolean).map((record) => property.rollup?.targetPropertyId === "title" ? record?.title : record?.properties[property.rollup!.targetPropertyId]);
       result[property.id] = rollupValue(values, property.rollup.aggregation);
     }
   }

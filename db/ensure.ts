@@ -160,6 +160,21 @@ export function ensureSchema() {
     )`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS database_records_source_updated_idx
       ON database_records (data_source_id, updated_at DESC)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS database_templates (
+      id TEXT PRIMARY KEY,
+      data_source_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      icon TEXT NOT NULL DEFAULT '✦',
+      description TEXT NOT NULL DEFAULT '',
+      title_template TEXT NOT NULL DEFAULT '未命名',
+      template_markdown TEXT NOT NULL DEFAULT '',
+      properties_json TEXT NOT NULL DEFAULT '{}',
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS database_templates_source_updated_idx
+      ON database_templates (data_source_id, updated_at DESC)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS code_projects (
       id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL DEFAULT 'default',

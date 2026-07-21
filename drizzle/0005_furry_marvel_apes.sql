@@ -1,0 +1,1 @@
+CREATE INDEX `database_templates_source_updated_idx` ON `database_templates` (`data_source_id`,`updated_at`);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { applyViewQuery, evaluateFilter, groupRecords } from "../lib/database/query.ts";
+import { applyViewQuery, evaluateFilter, groupRecords, matchingConditionalColor } from "../lib/database/query.ts";
 
 const records = [
   { id: "1", title: "Ship offline package", properties: { status: "Done", priority: "High", progress: 100, tags: ["Offline"] } },
@@ -44,6 +44,15 @@ test("groups multi-select values into each matching group", () => {
   assert.deepEqual(groups.get("Connector")?.map((record) => record.id), ["2"]);
 });
 
+test("conditional colors use the first matching persisted rule", () => {
+  const color = matchingConditionalColor(records[2], [
+    { property: "priority", operator: "equals", value: "High", color: "purple" },
+    { property: "status", operator: "equals", value: "Review", color: "green" },
+  ]);
+  assert.equal(color, "purple");
+  assert.equal(matchingConditionalColor(records[1], [{ property: "progress", operator: "greater_than", value: 50, color: "red" }]), undefined);
+});
+
 test("database UI exposes persisted nested filters and ordered multi-sort", async () => {
   const [workspace, route] = await Promise.all([
     readFile(new URL("../app/workspace.tsx", import.meta.url), "utf8"),
@@ -54,6 +63,10 @@ test("database UI exposes persisted nested filters and ordered multi-sort", asyn
   assert.match(workspace, /setFilterGroup\(tableConfig\.filters/);
   assert.match(workspace, /setFilterGroup\(config\.filters/);
   assert.match(workspace, /function SortEditor/);
+  assert.match(workspace, /function ConditionalColorEditor/);
+  assert.match(workspace, /function DatabaseTemplatesModal/);
+  assert.match(workspace, /database-source-picker/);
+  assert.match(workspace, /relationOptions/);
   assert.match(workspace, /从上到下优先/);
   assert.match(workspace, /BoardView\(\{ tasks, property, subGroupProperty/);
   assert.match(workspace, /CalendarView\(\{ tasks, dateProperty/);
@@ -64,4 +77,5 @@ test("database UI exposes persisted nested filters and ordered multi-sort", asyn
   assert.match(route, /FilterGroupDepth3Schema/);
   assert.match(route, /config: ViewConfigSchema/);
   assert.match(route, /sorts: z\.array\([\s\S]*?\)\.max\(20\)/);
+  assert.match(route, /conditionalColors:[\s\S]*?\.max\(20\)/);
 });

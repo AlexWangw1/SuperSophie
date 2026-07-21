@@ -20,6 +20,9 @@ export type FilterGroup = {
 };
 
 export type ViewSort = { property: string; direction: "ascending" | "descending" };
+export const DATABASE_CONDITIONAL_COLORS = ["gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red"] as const;
+export type DatabaseConditionalColor = typeof DATABASE_CONDITIONAL_COLORS[number];
+export type ConditionalColorRule = Omit<FilterCondition, "type"> & { color: DatabaseConditionalColor };
 
 function recordValue(record: DatabaseRecordLike, property: string) {
   return property === "title" ? record.title : record.properties[property];
@@ -43,7 +46,7 @@ function includesValue(actual: DatabaseValue, expected: DatabaseValue) {
   return String(actual ?? "").toLocaleLowerCase().includes(String(expected ?? "").toLocaleLowerCase());
 }
 
-function conditionMatches(record: DatabaseRecordLike, filter: FilterCondition) {
+export function conditionMatches(record: DatabaseRecordLike, filter: FilterCondition) {
   const actual = recordValue(record, filter.property);
   const expected = filter.value;
   if (filter.operator === "is_empty") return isEmpty(actual);
@@ -59,6 +62,10 @@ function conditionMatches(record: DatabaseRecordLike, filter: FilterCondition) {
   if (filter.operator === "greater_than" || filter.operator === "on_or_after") return left >= right;
   if (filter.operator === "less_than" || filter.operator === "on_or_before") return left <= right;
   return true;
+}
+
+export function matchingConditionalColor(record: DatabaseRecordLike, rules: ConditionalColorRule[]) {
+  return rules.find((rule) => conditionMatches(record, { type: "condition", property: rule.property, operator: rule.operator, value: rule.value }))?.color;
 }
 
 export function evaluateFilter(record: DatabaseRecordLike, filter: FilterCondition | FilterGroup, depth = 1): boolean {

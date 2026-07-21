@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   computeDatabaseProperties,
@@ -60,6 +61,25 @@ test("relations, rollups, IDs, timestamps and formulas compute deterministically
   assert.equal(result.updated_at, "2026-07-21T10:00:00Z");
 });
 
+test("cross-data-source rollups resolve records from the relation target", () => {
+  const schema = normalizeDatabasePropertySchema({ version: 1, properties: [
+    { id: "title", name: "项目", type: "title" },
+    { id: "milestones", name: "里程碑", type: "relation", relation: { dataSourceId: "milestones", twoWay: true } },
+    { id: "total_budget", name: "总预算", type: "rollup", rollup: { relationPropertyId: "milestones", targetPropertyId: "budget", aggregation: "sum" } },
+  ] });
+  const recordsBySourceId = new Map([["milestones", new Map([
+    ["M-1", { title: "设计", properties: { budget: 80 } }],
+    ["M-2", { title: "开发", properties: { budget: 120 } }],
+  ])]]);
+  const result = computeDatabaseProperties({
+    schema,
+    raw: { milestones: ["M-1", "M-2"] },
+    record: { id: "P-1", title: "SuperSophie" },
+    recordsBySourceId,
+  });
+  assert.equal(result.total_budget, 200);
+});
+
 test("writable property normalization strips unknown and derived values", () => {
   const result = normalizeDatabasePropertyValues(defaultProductTaskPropertySchema, {
     status: "Review",
@@ -79,13 +99,43 @@ test("writable property normalization strips unknown and derived values", () => 
   });
 });
 
-test("database API persists schema revisions and returns computed properties", async () => {
-  const [route, schema] = await Promise.all([
+test("database API persists schemas, templates and cross-source relation evidence", async () => {
+  const [route, schema, migration, snapshot, sync] = await Promise.all([
     readFile(new URL("../app/api/database/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/ensure.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0004_redundant_ricochet.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/connectors/workspace-snapshot.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/connectors/workspace-sync.ts", import.meta.url), "utf8"),
   ]);
   assert.match(route, /action: z\.literal\("save-schema"\)/);
+  assert.match(route, /action: z\.literal\("create-source"\)/);
+  assert.match(route, /action: z\.literal\("save-template"\)/);
+  assert.match(route, /action: z\.literal\("create-from-template"\)/);
+  assert.match(route, /normalizeRelationValues/);
+  assert.match(route, /syncTwoWayRelations/);
+  assert.match(route, /template_id_conflict/);
+  assert.match(route, /record_id_conflict/);
+  assert.match(route, /view_id_conflict/);
   assert.match(route, /computeDatabaseProperties/);
   assert.match(route, /baseRevision/);
   assert.match(schema, /CREATE TABLE IF NOT EXISTS database_property_schemas/);
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS database_templates/);
+  assert.match(migration, /CREATE TABLE `database_templates`/);
+  assert.match(snapshot, /snapshotEntry\("database-template"/);
+  assert.match(sync, /kind: "database-template"/);
+});
+
+test("database template migration backfills existing sources with valid Markdown", async () => {
+  const [tableMigration, indexMigration] = await Promise.all([
+    readFile(new URL("../drizzle/0004_redundant_ricochet.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0005_furry_marvel_apes.sql", import.meta.url), "utf8"),
+  ]);
+  const database = new DatabaseSync(":memory:");
+  database.exec("CREATE TABLE data_sources (id TEXT PRIMARY KEY); INSERT INTO data_sources VALUES ('workspace:product-tasks');");
+  database.exec(tableMigration);
+  database.exec(indexMigration);
+  const template = database.prepare("SELECT id, template_markdown AS markdown FROM database_templates").get();
+  assert.equal(template.id, "workspace:product-tasks:template:standard");
+  assert.match(template.markdown, /\nkind: database-template\n/);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM pragma_index_list('database_templates') WHERE name = 'database_templates_source_updated_idx'").get().count, 1);
 });

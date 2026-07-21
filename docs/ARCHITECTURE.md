@@ -23,6 +23,7 @@ Block editor / Database views / Agent work / Code / Connectors
 - `connector_credentials`：按工作区使用 AES-256-GCM 加密的 OAuth、模型和社交连接凭据；浏览器只能读取配置状态，不能读回秘密值。
 - `connector_sync_events`：OneDrive 等外部存储的同步回执。
 - `connector_sync_conflicts`：同一修订出现不同内容时保存 App Cloud 与 OneDrive 两份 Markdown，直到用户明确选择。
+- `database_templates`：按数据源保存标题、属性预设和 Markdown 正文；与记录一样使用 revision、删除墓碑和 OneDrive 快照。
 - `workspace_tombstones`：记录删除的实体、修订和时间，使删除操作也能跨设备传播。
 - `code_projects` + `code_files`：跨设备代码项目；`content_markdown` 是真相源，`content_text` 是编辑派生值，revision 阻止静默覆盖。
 - `assets`：附件的名称、类型、哈希和 R2 key；二进制不进入 D1。

@@ -31,6 +31,7 @@ import {
   type SophiePage,
 } from "../lib/sophie-package";
 import { applyViewQuery, type FilterGroup, type ViewSort } from "../lib/database/query";
+import { WorkspaceMenu } from "./auth-gate";
 
 type Section = "home" | "notes" | "database" | "agents" | "code" | "connectors";
 type ViewType = "table" | "board" | "timeline" | "calendar" | "list" | "gallery" | "chart" | "map" | "feed" | "dashboard" | "form";
@@ -1217,12 +1218,13 @@ function CodeView() {
 
 type ConnectorId = "appcloud" | "onedrive" | "wechat" | "qq" | "telegram";
 type SocialChannel = "wechat" | "qq" | "telegram";
-type ConnectorState = { configured: boolean; connected: boolean; label?: string; accountLabel?: string | null; lastSync?: { status: string; remotePath: string; createdAt: string } | null };
+type ConnectorState = { configured: boolean; connected: boolean; label?: string; accountLabel?: string | null; openConflicts?: number; lastSync?: { status: string; remotePath: string; createdAt: string } | null };
 type OutboxMessage = { id: string; channel: SocialChannel; target: string; payloadMarkdown: string; status: string; createdAt: string; lastAttemptMarkdown?: string | null };
+type SyncConflict = { id: string; entityKind: string; entityId: string; detailsMarkdown: string; createdAt: string };
 
 const connectorCards: Array<{ id: ConnectorId; name: string; icon: string; desc: string; tone: string }> = [
   { id: "appcloud", name: "App Cloud", icon: "S", desc: "D1 + R2 跨设备托管同步", tone: "violet" },
-  { id: "onedrive", name: "OneDrive", icon: "☁", desc: "Microsoft OAuth 工作区备份", tone: "blue" },
+  { id: "onedrive", name: "OneDrive", icon: "☁", desc: "Microsoft OAuth 双向 Markdown 同步", tone: "blue" },
   { id: "wechat", name: "微信", icon: "微", desc: "企业微信官方群机器人", tone: "green" },
   { id: "qq", name: "QQ", icon: "Q", desc: "QQ 官方群聊与单聊机器人", tone: "blue" },
   { id: "telegram", name: "Telegram", icon: "T", desc: "官方 Bot API 与频道", tone: "sky" },
@@ -1240,6 +1242,7 @@ async function responseError(response: Response) {
 function ConnectorsView() {
   const [connectors, setConnectors] = useState<Partial<Record<ConnectorId, ConnectorState>>>({});
   const [messages, setMessages] = useState<OutboxMessage[]>([]);
+  const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
   const [channel, setChannel] = useState<SocialChannel>("telegram");
   const [target, setTarget] = useState("");
   const [qqTargetKind, setQqTargetKind] = useState<"group" | "user">("group");
@@ -1250,12 +1253,18 @@ function ConnectorsView() {
 
   const refresh = useCallback(async () => {
     try {
-      const [connectorResponse, outboxResponse] = await Promise.all([fetch("/api/connectors"), fetch("/api/outbox")]);
-      if (!connectorResponse.ok || !outboxResponse.ok) throw new Error("连接器状态读取失败");
+      const [connectorResponse, outboxResponse, conflictResponse] = await Promise.all([
+        fetch("/api/connectors"),
+        fetch("/api/outbox"),
+        fetch("/api/connectors/onedrive/conflicts"),
+      ]);
+      if (!connectorResponse.ok || !outboxResponse.ok || !conflictResponse.ok) throw new Error("连接器状态读取失败");
       const connectorPayload = await connectorResponse.json() as { connectors: Record<ConnectorId, ConnectorState> };
       const outboxPayload = await outboxResponse.json() as { messages: OutboxMessage[] };
+      const conflictPayload = await conflictResponse.json() as { conflicts: SyncConflict[] };
       setConnectors(connectorPayload.connectors);
       setMessages(outboxPayload.messages);
+      setConflicts(conflictPayload.conflicts);
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : "连接器状态读取失败");
     }
@@ -1357,9 +1366,27 @@ function ConnectorsView() {
     try {
       const response = await fetch("/api/connectors/onedrive/sync", { method: "POST" });
       if (!response.ok) throw new Error(await responseError(response));
-      setFeedback("OneDrive 工作区 Markdown 快照已更新");
+      const payload = await response.json() as { status: string; merge: { inserted: number; updated: number; deleted: number; conflicts: number } };
+      const pulled = payload.merge.inserted + payload.merge.updated + payload.merge.deleted;
+      setFeedback(payload.merge.conflicts
+        ? `双向同步完成：拉取 ${pulled} 项，保留 ${payload.merge.conflicts} 个冲突待核对`
+        : `双向同步完成：拉取 ${pulled} 项，OneDrive 与 App Cloud 已一致`);
     } catch (error) { setFeedback(error instanceof Error ? error.message : "OneDrive 同步失败"); }
     finally { setSyncing(false); await refresh(); }
+  };
+
+  const resolveConflict = async (id: string, resolution: "keep-local" | "use-remote") => {
+    setBusy(id);
+    try {
+      const response = await fetch("/api/connectors/onedrive/conflicts", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, resolution }),
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      setFeedback(resolution === "keep-local" ? "已保留 App Cloud 版本" : "已采用 OneDrive 版本");
+    } catch (error) { setFeedback(error instanceof Error ? error.message : "冲突解决失败"); }
+    finally { setBusy(null); await refresh(); }
   };
 
   const targetLabel = channel === "telegram" ? "chat_id 或 @频道名" : channel === "qq" ? "QQ 目标 openid" : "目标群备注（审核用）";
@@ -1386,11 +1413,20 @@ function ConnectorsView() {
         <div className="sync-settings">
           <div className="panel-heading"><div><span className="section-kicker">STORAGE</span><h3>同步策略</h3></div></div>
           <div className="storage-choice active"><span className="connector-logo violet">S</span><div><strong>App Cloud</strong><small>当前主存储 · D1 Markdown + R2 资源</small></div><i>✓</i></div>
-          <div className={`storage-choice ${oneDrive?.connected ? "active" : ""}`}><span className="connector-logo blue">☁</span><div><strong>OneDrive</strong><small>{oneDrive?.connected ? `${oneDrive.accountLabel || "已连接"} · ${oneDrive.lastSync ? `最近 ${oneDrive.lastSync.status}` : "尚未同步"}` : "OAuth 连接后上传可恢复 Markdown 快照"}</small></div><button disabled={!oneDrive?.connected || syncing} onClick={() => void syncOneDrive()}>{syncing ? "同步中" : "立即同步"}</button></div>
+          <div className={`storage-choice ${oneDrive?.connected ? "active" : ""}`}><span className="connector-logo blue">☁</span><div><strong>OneDrive</strong><small>{oneDrive?.connected ? `${oneDrive.accountLabel || "已连接"} · ${oneDrive.openConflicts ? `${oneDrive.openConflicts} 个冲突待核对` : oneDrive.lastSync ? `最近 ${oneDrive.lastSync.status}` : "尚未同步"}` : "OAuth 连接后双向合并 Markdown 工作区"}</small></div><button disabled={!oneDrive?.connected || syncing} onClick={() => void syncOneDrive()}>{syncing ? "同步中" : "双向同步"}</button></div>
           <div className="sync-rule"><span><b>离线优先</b><small>先保存到设备，联网后同步 App Cloud</small></span><button className="toggle on" aria-label="离线优先已开启"><i /></button></div>
           <div className="sync-rule"><span><b>冲突保留双方</b><small>不静默覆盖任何版本</small></span><button className="toggle on" aria-label="冲突保留已开启"><i /></button></div>
         </div>
       </section>
+      {conflicts.length > 0 && <section className="sync-conflict-review">
+        <div className="panel-heading"><div><span className="section-kicker">SYNC CONFLICTS</span><h3>需要你核对的版本</h3></div><span>{conflicts.length} 项</span></div>
+        <p>同步没有静默覆盖任何一方。选择保留 App Cloud，或明确采用 OneDrive 副本。</p>
+        {conflicts.map((conflict) => <article key={conflict.id}>
+          <div><strong>{conflict.entityKind}</strong><small>{conflict.entityId}</small></div>
+          <details><summary>查看冲突说明</summary><pre>{conflict.detailsMarkdown}</pre></details>
+          <footer><button disabled={busy === conflict.id} onClick={() => void resolveConflict(conflict.id, "keep-local")}>保留 App Cloud</button><button className="primary-small" disabled={busy === conflict.id} onClick={() => void resolveConflict(conflict.id, "use-remote")}>采用 OneDrive</button></footer>
+        </article>)}
+      </section>}
       <section className="outbox-review">
         <div className="panel-heading"><div><span className="section-kicker">REVIEW QUEUE</span><h3>审核队列</h3></div><span>{messages.length} 条</span></div>
         {messages.length === 0 && <p className="empty-state">还没有待审核消息。</p>}
@@ -1432,6 +1468,6 @@ export function SophieWorkspace() {
     return () => { cancelAnimationFrame(frame); removeEventListener("online", onOnline); removeEventListener("offline", onOffline); removeEventListener("keydown", onKey); };
   }, []);
   const go = (next: Section) => { setSection(next); setSidebarOpen(false); };
-  if (section === "home") return <ConversationHome go={go} />;
-  return <div className="workspace-shell"><button className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button><aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><div className="workspace-switcher"><span className="brand-mark">S</span><div><strong>SuperSophie</strong><small>Personal workspace</small></div><button>⌄</button></div><nav>{navItems.map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span className="nav-icon">{item.icon}</span><strong>{item.label}</strong>{item.hint && <i>{item.hint}</i>}</button>)}</nav><div className="sidebar-section"><p>空间</p><button onClick={() => go("notes")}><span className="space-dot violet" />产品与架构</button><button onClick={() => go("database")}><span className="space-dot amber" />项目与任务</button><button onClick={() => go("notes")}><span className="space-dot blue" />研究与灵感</button><button><span>＋</span>新建空间</button></div><div className="sidebar-bottom"><button><span>?</span><strong>帮助与快捷键</strong></button><div className="sync-card"><span className="cloud-mark">☁</span><div><strong>{online ? "云端已同步" : "当前离线"}</strong><small>{online ? "App Cloud · 刚刚" : "修改保存在此设备"}</small></div><StatusDot tone={online ? "green" : "amber"} /></div></div></aside><div className="workspace-main"><TopBar section={section} onSearch={() => setSearchOpen(true)} />{section === "notes" && <NotesView />}{section === "database" && <DatabaseView />}{section === "agents" && <AgentsView />}{section === "code" && <CodeView />}{section === "connectors" && <ConnectorsView />}</div>{searchOpen && <SearchPalette close={() => setSearchOpen(false)} go={go} />}<nav className="mobile-nav">{navItems.slice(0, 5).map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span>{item.icon}</span><small>{item.label}</small></button>)}</nav></div>;
+  if (section === "home") return <><ConversationHome go={go} /><div className="home-identity"><WorkspaceMenu compact /></div></>;
+  return <div className="workspace-shell"><button className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button><aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><WorkspaceMenu /><nav>{navItems.map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span className="nav-icon">{item.icon}</span><strong>{item.label}</strong>{item.hint && <i>{item.hint}</i>}</button>)}</nav><div className="sidebar-section"><p>空间</p><button onClick={() => go("notes")}><span className="space-dot violet" />产品与架构</button><button onClick={() => go("database")}><span className="space-dot amber" />项目与任务</button><button onClick={() => go("notes")}><span className="space-dot blue" />研究与灵感</button><button><span>＋</span>新建空间</button></div><div className="sidebar-bottom"><button><span>?</span><strong>帮助与快捷键</strong></button><div className="sync-card"><span className="cloud-mark">☁</span><div><strong>{online ? "云端已同步" : "当前离线"}</strong><small>{online ? "App Cloud · 当前工作区" : "修改保存在此设备"}</small></div><StatusDot tone={online ? "green" : "amber"} /></div></div></aside><div className="workspace-main"><TopBar section={section} onSearch={() => setSearchOpen(true)} />{section === "notes" && <NotesView />}{section === "database" && <DatabaseView />}{section === "agents" && <AgentsView />}{section === "code" && <CodeView />}{section === "connectors" && <ConnectorsView />}</div>{searchOpen && <SearchPalette close={() => setSearchOpen(false)} go={go} />}<nav className="mobile-nav">{navItems.slice(0, 5).map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span>{item.icon}</span><small>{item.label}</small></button>)}</nav></div>;
 }

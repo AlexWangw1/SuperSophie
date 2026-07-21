@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -36,6 +36,14 @@ export const sessions = sqliteTable("sessions", {
   expiresAt: text("expires_at").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const authLoginLimits = sqliteTable("auth_login_limits", {
+  id: text("id").primaryKey(),
+  failures: integer("failures").notNull().default(0),
+  windowStartedAt: text("window_started_at").notNull(),
+  blockedUntil: text("blocked_until"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const securityEvents = sqliteTable("security_events", {
@@ -209,6 +217,34 @@ export const connectorSyncEvents = sqliteTable("connector_sync_events", {
   detailsMarkdown: text("details_markdown").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const connectorSyncConflicts = sqliteTable("connector_sync_conflicts", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull(),
+  provider: text("provider").notNull(),
+  entityKind: text("entity_kind").notNull(),
+  entityId: text("entity_id").notNull(),
+  localMarkdown: text("local_markdown").notNull(),
+  remoteMarkdown: text("remote_markdown").notNull(),
+  detailsMarkdown: text("details_markdown").notNull(),
+  status: text("status").notNull().default("open"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  resolvedAt: text("resolved_at"),
+}, (table) => [
+  uniqueIndex("connector_sync_conflicts_open_idx").on(table.workspaceId, table.provider, table.entityKind, table.entityId, table.status),
+]);
+
+export const workspaceTombstones = sqliteTable("workspace_tombstones", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull(),
+  entityKind: text("entity_kind").notNull(),
+  entityId: text("entity_id").notNull(),
+  deletedRevision: integer("deleted_revision").notNull().default(0),
+  deletedAt: text("deleted_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  detailsMarkdown: text("details_markdown").notNull().default(""),
+}, (table) => [
+  uniqueIndex("workspace_tombstones_entity_idx").on(table.workspaceId, table.entityKind, table.entityId),
+]);
 
 export const assets = sqliteTable("assets", {
   id: text("id").primaryKey(),

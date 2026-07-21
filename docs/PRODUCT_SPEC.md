@@ -11,7 +11,8 @@ SuperSophie 是一个 Markdown-first、离线优先、可同步的个人智能�
 5. **模型配置**：支持 OpenAI、Anthropic、Google、OpenRouter、Ollama 与 OpenAI-compatible endpoint；密钥不写入 Markdown。
 6. **连接器**：Telegram、企业微信官方群机器人、QQ 官方机器人、OneDrive 与 App Cloud；消息先进入可审阅的 Markdown outbox，只有人工批准后才能发送。
 7. **离线包**：`.sophie` 文件使用 `SOPHIE/1` 魔数，包含 manifest、页面 Markdown、块索引、属性、附件与校验和。最新版客户端可直接打开，不依赖网络。
-8. **同步**：设备本地保留离线副本；在线时通过 revision、内容哈希和变更日志与 D1/R2、OneDrive 或自托管存储同步。
+8. **同步**：设备本地保留离线副本；在线时通过 revision、内容哈希、删除墓碑和冲突证据与 D1/R2、OneDrive 或自托管存储同步。
+9. **身份与工作区**：账户、设备会话和多个工作区在服务端隔离；访问密钥可轮换，其他设备可撤销，所有业务 API 都验证当前成员身份。
 
 ## Notion 数据库兼容目标
 

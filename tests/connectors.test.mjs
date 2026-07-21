@@ -8,6 +8,13 @@ import {
   decryptConnectorCredential,
   encryptConnectorCredential,
 } from "../lib/connectors/crypto.ts";
+import {
+  downloadOneDriveMarkdown,
+  OneDrivePreconditionError,
+  uploadOneDriveMarkdown,
+} from "../lib/connectors/onedrive.ts";
+import { parseWorkspaceSnapshotMarkdown } from "../lib/connectors/workspace-snapshot.ts";
+import { decideSnapshotMerge } from "../lib/connectors/workspace-sync.ts";
 
 function request(channel, target = "123456") {
   return { outboxId: "00000000-0000-4000-8000-000000000001", channel, target, markdown: "**发布完成**" };
@@ -72,4 +79,91 @@ test("connector credentials round-trip through AES-GCM without plaintext leakage
   const ciphertext = await encryptConnectorCredential(value, key);
   assert.equal(ciphertext.includes("access-secret"), false);
   assert.deepEqual(await decryptConnectorCredential(ciphertext, key), value);
+});
+
+test("workspace snapshot v2 restores unicode metadata and Markdown body", () => {
+  const row = {
+    id: "workspace-1:page-1",
+    workspace_id: "workspace-1",
+    title: "同步设计",
+    markdown: "# 同步设计\n\n保留双方。",
+    revision: 4,
+    updated_at: "2026-07-21T10:00:00.000Z",
+  };
+  const metadata = Buffer.from(JSON.stringify(row), "utf8").toString("base64url");
+  const markdown = `---\nsophie: 2\nkind: workspace-snapshot\nworkspaceId: workspace-1\ngeneratedAt: 2026-07-21T10:01:00.000Z\n---\n\n<!-- sophie:snapshot-entry kind=document id=workspace-1%3Apage-1 -->\n<!-- sophie:snapshot-meta ${metadata} -->\n# 同步设计\n\n保留双方。\n<!-- /sophie:snapshot-entry -->`;
+  const snapshot = parseWorkspaceSnapshotMarkdown(markdown);
+  assert.equal(snapshot.version, 2);
+  assert.equal(snapshot.workspaceId, "workspace-1");
+  assert.equal(snapshot.entries[0].data.title, "同步设计");
+  assert.match(snapshot.entries[0].markdown, /保留双方/);
+});
+
+test("workspace snapshot parser remains compatible with v1 entry markers", () => {
+  const markdown = `---\nsophie: 1\nworkspaceId: default\ngeneratedAt: 2026-07-21T10:01:00.000Z\n---\n\n<!-- sophie:snapshot-entry kind=document id=legacy-page -->\n# 旧页面\n<!-- /sophie:snapshot-entry -->`;
+  const snapshot = parseWorkspaceSnapshotMarkdown(markdown);
+  assert.deepEqual(snapshot.entries[0].data, { id: "legacy-page" });
+  assert.match(snapshot.entries[0].markdown, /旧页面/);
+});
+
+test("revision merge takes newer copies and exposes equal-revision divergence", () => {
+  const base = { id: "w:doc", workspace_id: "w", title: "A", markdown: "# A", revision: 2 };
+  assert.equal(decideSnapshotMerge(base, { ...base, revision: 3, markdown: "# B" }, "document"), "replace");
+  assert.equal(decideSnapshotMerge(base, { ...base, revision: 1, markdown: "# old" }, "document"), "keep-local");
+  assert.equal(decideSnapshotMerge(base, { ...base, markdown: "# divergent" }, "document"), "conflict");
+  assert.equal(decideSnapshotMerge(base, { ...base }, "document"), "same");
+});
+
+test("outbox merge never regresses a sent message to an earlier state", () => {
+  const local = { id: "o1", workspace_id: "w", channel: "telegram", payload_markdown: "hi", status: "sent" };
+  assert.equal(decideSnapshotMerge(local, { ...local, status: "approved" }, "connector-outbox"), "keep-local");
+  assert.equal(decideSnapshotMerge({ ...local, status: "review" }, { ...local, status: "sent" }, "connector-outbox"), "replace");
+});
+
+test("OneDrive download uses the preauthenticated content URL without forwarding credentials", async () => {
+  const calls = [];
+  const result = await downloadOneDriveMarkdown({
+    accessToken: "access-secret",
+    fileName: "SuperSophie-workspace-latest.md",
+    fetcher: async (url, init) => {
+      calls.push({ url: String(url), headers: init?.headers });
+      if (calls.length === 1) return Response.json({
+        id: "drive-item-1",
+        name: "SuperSophie-workspace-latest.md",
+        eTag: "etag-1",
+        "@microsoft.graph.downloadUrl": "https://download.example/snapshot",
+      });
+      return new Response("---\nsophie: 2\nworkspaceId: w\ngeneratedAt: 2026-07-21T10:00:00.000Z\n---");
+    },
+  });
+  assert.equal(result.id, "drive-item-1");
+  assert.equal(calls[0].headers.authorization, "Bearer access-secret");
+  assert.equal(calls[1].headers, undefined);
+});
+
+test("OneDrive update sends the observed eTag and surfaces concurrent writes", async () => {
+  let headers;
+  await uploadOneDriveMarkdown({
+    accessToken: "access-secret",
+    fileName: "snapshot.md",
+    itemId: "drive-item-1",
+    ifMatch: "etag-1",
+    markdown: "# snapshot",
+    fetcher: async (_url, init) => {
+      headers = init?.headers;
+      return Response.json({ id: "drive-item-1", eTag: "etag-2" });
+    },
+  });
+  assert.equal(headers["if-match"], "etag-1");
+  await assert.rejects(
+    uploadOneDriveMarkdown({
+      accessToken: "access-secret",
+      fileName: "snapshot.md",
+      itemId: "drive-item-1",
+      ifMatch: "stale",
+      markdown: "# snapshot",
+      fetcher: async () => Response.json({ error: { code: "preconditionFailed" } }, { status: 412 }),
+    }),
+    OneDrivePreconditionError,
+  );
 });

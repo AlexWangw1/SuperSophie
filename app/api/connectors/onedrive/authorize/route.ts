@@ -2,9 +2,11 @@ import { env } from "cloudflare:workers";
 import { ensureSchema } from "../../../../../db/ensure";
 import { createPkceChallenge, createPkceVerifier } from "../../../../../lib/connectors/crypto";
 import { getOneDriveOAuthConfig } from "../../../../../lib/connectors/onedrive";
+import { authErrorResponse, requireWorkspace } from "../../../../../lib/auth";
 
 export async function GET(request: Request) {
   try {
+    const { workspaceId } = await requireWorkspace(request);
     await ensureSchema();
     const config = getOneDriveOAuthConfig(env);
     const origin = new URL(request.url).origin;
@@ -17,8 +19,8 @@ export async function GET(request: Request) {
       env.DB.prepare(`DELETE FROM connector_oauth_states WHERE expires_at < ?`).bind(new Date().toISOString()),
       env.DB.prepare(
         `INSERT INTO connector_oauth_states (state, workspace_id, provider, code_verifier, redirect_uri, expires_at)
-         VALUES (?, 'default', 'onedrive', ?, ?, ?)`,
-      ).bind(state, verifier, redirectUri, expiresAt),
+         VALUES (?, ?, 'onedrive', ?, ?, ?)`,
+      ).bind(state, workspaceId, verifier, redirectUri, expiresAt),
     ]);
     const authorizeUrl = new URL(`https://login.microsoftonline.com/${encodeURIComponent(config.tenant)}/oauth2/v2.0/authorize`);
     authorizeUrl.search = new URLSearchParams({
@@ -33,7 +35,9 @@ export async function GET(request: Request) {
       prompt: "select_account",
     }).toString();
     return Response.redirect(authorizeUrl.toString(), 302);
-  } catch {
+  } catch (error) {
+    const auth = authErrorResponse(error);
+    if (auth) return auth;
     const redirect = new URL("/", new URL(request.url).origin);
     redirect.searchParams.set("section", "connectors");
     redirect.searchParams.set("onedrive", "unconfigured");

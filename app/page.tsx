@@ -1,6 +1,6 @@
 import { SophieWorkspace } from "./workspace";
+import { AuthGate } from "./auth-gate";
 
 export default function Home() {
-  return <SophieWorkspace />;
+  return <AuthGate><SophieWorkspace /></AuthGate>;
 }
-

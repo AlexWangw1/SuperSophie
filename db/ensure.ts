@@ -229,6 +229,32 @@ export function ensureSchema() {
     )`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS connector_sync_events_workspace_idx
       ON connector_sync_events (workspace_id, provider, created_at DESC)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS connector_sync_conflicts (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      entity_kind TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      local_markdown TEXT NOT NULL,
+      remote_markdown TEXT NOT NULL,
+      details_markdown TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      resolved_at TEXT
+    )`),
+    env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS connector_sync_conflicts_open_idx
+      ON connector_sync_conflicts (workspace_id, provider, entity_kind, entity_id, status)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS workspace_tombstones (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      entity_kind TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      deleted_revision INTEGER NOT NULL DEFAULT 0,
+      deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      details_markdown TEXT NOT NULL DEFAULT ''
+    )`),
+    env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS workspace_tombstones_entity_idx
+      ON workspace_tombstones (workspace_id, entity_kind, entity_id)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS assets (
       id TEXT PRIMARY KEY,
       document_id TEXT,

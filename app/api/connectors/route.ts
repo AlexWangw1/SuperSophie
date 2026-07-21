@@ -7,7 +7,7 @@ export async function GET(request: Request) {
   try {
     const { workspaceId } = await requireWorkspace(request);
     await ensureSchema();
-    const [oneDriveCredential, lastSync] = await Promise.all([
+    const [oneDriveCredential, lastSync, conflictCount] = await Promise.all([
     env.DB.prepare(
       `SELECT account_label AS accountLabel, expires_at AS expiresAt
        FROM connector_credentials WHERE workspace_id = ? AND provider = 'onedrive' LIMIT 1`,
@@ -17,6 +17,10 @@ export async function GET(request: Request) {
        FROM connector_sync_events WHERE workspace_id = ? AND provider = 'onedrive'
        ORDER BY created_at DESC LIMIT 1`,
     ).bind(workspaceId).first<{ status: string; remotePath: string; detailsMarkdown: string; createdAt: string }>(),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM connector_sync_conflicts
+       WHERE workspace_id = ? AND provider = 'onedrive' AND status = 'open'`,
+    ).bind(workspaceId).first<{ count: number }>(),
     ]);
     const social = getSocialConnectorStatus(env);
     const oneDriveConfigured = Boolean(
@@ -34,6 +38,7 @@ export async function GET(request: Request) {
           connected: Boolean(oneDriveCredential),
           accountLabel: oneDriveCredential?.accountLabel ?? null,
           lastSync,
+          openConflicts: Number(conflictCount?.count ?? 0),
         },
       },
     });

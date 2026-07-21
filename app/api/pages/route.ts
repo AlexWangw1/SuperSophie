@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { ensureSchema } from "../../../db/ensure";
 import { authErrorResponse, requireWorkspace } from "../../../lib/auth";
 import { publicResourceId, scopedResourceId } from "../../../lib/workspace-resource";
+import { clearWorkspaceTombstone } from "../../../lib/sync-tombstones";
 
 type PagePayload = {
   id?: string;
@@ -72,6 +73,7 @@ export async function POST(request: Request) {
         JSON.stringify(payload.properties ?? {}),
         nextRevision,
       ).run();
+    await clearWorkspaceTombstone(env.DB, workspaceId, "document", storedId);
 
     return Response.json({ id, revision: nextRevision, updatedAt: new Date().toISOString() }, { status: existing ? 200 : 201 });
   } catch (error) {

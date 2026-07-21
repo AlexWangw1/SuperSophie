@@ -74,13 +74,24 @@ $connectorKeyBytes = [byte[]]::new(32)
 [Convert]::ToBase64String($connectorKeyBytes)
 ```
 
-授权采用 OAuth 2.0 authorization code + PKCE，申请 `offline_access Files.ReadWrite User.Read`。访问令牌和刷新令牌使用 AES-256-GCM 加密后保存在 `connector_credentials`，过期时会轮换刷新令牌。手动同步会上传根目录文件 `SuperSophie-workspace-latest.md`，其中包含页面、数据库、Agent 运行、对话、发件箱与资源清单的 Markdown 真相源；不包含任何凭据。
+授权采用 OAuth 2.0 authorization code + PKCE，申请 `offline_access Files.ReadWrite User.Read`。访问令牌和刷新令牌使用 AES-256-GCM 加密后保存在 `connector_credentials`，过期时会轮换刷新令牌。
+
+“双向同步”读取根目录 `SuperSophie-workspace-*-latest.md`，验证工作区 ID，按 revision 和更新时间合并页面、数据库、代码、Agent 运行、对话与发件箱，再写回统一的 v2 Markdown 快照：
+
+- 远端 revision 更高时导入；本地更高时保留本地并写回。
+- 同一 revision 内容不同，不选择任一方覆盖，而是把两份 Markdown 写入 `connector_sync_conflicts`。
+- 用户可在连接器页面逐项“保留 App Cloud”或“采用 OneDrive”。
+- 删除以 `workspace_tombstones` 墓碑传播，较新的修改不会被较旧删除覆盖。
+- 写回携带读取到的 eTag；同步期间远端改变会重新读取并重试。
+- v1 旧快照先另存归档，再升级为 v2；凭据始终不进入快照。
+- R2 附件字节尚未镜像到 OneDrive，快照只保存名称、大小、MIME 与 SHA-256 清单。
 
 - OAuth 授权码流程：https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow
+- 文件下载：https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0
 - 小文件上传：https://learn.microsoft.com/en-us/graph/api/driveitem-put-content?view=graph-rest-1.0
 
 ## 当前边界
 
-- 已实现：Telegram、企业微信、QQ 的审核后出站；OneDrive OAuth 和手动 Markdown 快照；App Cloud D1/R2。
-- 尚未实现：社交平台入站事件、Chat SDK webhook、多设备身份隔离、OneDrive 增量双向合并、自托管 S3/WebDAV 适配器。
+- 已实现：Telegram、企业微信、QQ 的审核后出站；OneDrive OAuth、双向 Markdown 合并、删除墓碑和人工冲突处理；App Cloud D1/R2；多账户、工作区和设备会话隔离。
+- 尚未实现：社交平台入站事件、Chat SDK webhook、OneDrive 附件字节镜像和后台自动增量触发、自托管 S3/WebDAV 适配器。
 - Chat SDK 已作为未来入站机器人层完成技术评估，但当前出站场景直接使用各平台官方 API，减少不必要的状态依赖。

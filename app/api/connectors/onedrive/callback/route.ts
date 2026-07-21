@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { ensureSchema } from "../../../../../db/ensure";
 import { exchangeOneDriveCode, encryptOneDriveCredential } from "../../../../../lib/connectors/onedrive";
 
-type OauthStateRow = { codeVerifier: string; redirectUri: string; expiresAt: string };
+type OauthStateRow = { workspaceId: string; codeVerifier: string; redirectUri: string; expiresAt: string };
 
 function redirectToConnectors(request: Request, status: "connected" | "error") {
   const target = new URL("/", new URL(request.url).origin);
@@ -20,8 +20,9 @@ export async function GET(request: Request) {
   try {
     await ensureSchema();
     const stateRow = await env.DB.prepare(
-      `SELECT code_verifier AS codeVerifier, redirect_uri AS redirectUri, expires_at AS expiresAt
-       FROM connector_oauth_states WHERE state = ? AND workspace_id = 'default' AND provider = 'onedrive' LIMIT 1`,
+      `SELECT workspace_id AS workspaceId, code_verifier AS codeVerifier,
+        redirect_uri AS redirectUri, expires_at AS expiresAt
+       FROM connector_oauth_states WHERE state = ? AND provider = 'onedrive' LIMIT 1`,
     ).bind(state).first<OauthStateRow>();
     if (!stateRow || Date.parse(stateRow.expiresAt) <= Date.now()) return redirectToConnectors(request, "error");
     const consumed = await env.DB.prepare(`DELETE FROM connector_oauth_states WHERE state = ?`).bind(state).run() as { meta?: { changes?: number } };
@@ -44,14 +45,14 @@ export async function GET(request: Request) {
     await env.DB.prepare(
       `INSERT INTO connector_credentials
         (id, workspace_id, provider, credential_ciphertext, account_label, scopes, expires_at)
-       VALUES (?, 'default', 'onedrive', ?, ?, ?, ?)
+       VALUES (?, ?, 'onedrive', ?, ?, ?, ?)
        ON CONFLICT(workspace_id, provider) DO UPDATE SET
          credential_ciphertext = excluded.credential_ciphertext,
          account_label = excluded.account_label,
          scopes = excluded.scopes,
          expires_at = excluded.expires_at,
          updated_at = CURRENT_TIMESTAMP`,
-    ).bind(crypto.randomUUID(), ciphertext, accountLabel, credential.scope, credential.expiresAt).run();
+    ).bind(crypto.randomUUID(), stateRow.workspaceId, ciphertext, accountLabel, credential.scope, credential.expiresAt).run();
     return redirectToConnectors(request, "connected");
   } catch {
     return redirectToConnectors(request, "error");

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ensureSchema } from "../../../db/ensure";
 import { authErrorResponse, requireWorkspace } from "../../../lib/auth";
 import { scopedResourceId } from "../../../lib/workspace-resource";
+import { clearWorkspaceTombstone, recordWorkspaceTombstone } from "../../../lib/sync-tombstones";
 
 const SOURCE_KEY = "product-tasks";
 const viewTypes = ["table", "board", "timeline", "calendar", "list", "gallery", "chart", "map", "feed", "dashboard", "form"] as const;
@@ -176,6 +177,7 @@ export async function POST(request: Request) {
            revision = excluded.revision,
            updated_at = CURRENT_TIMESTAMP`,
       ).bind(id, sourceId, record.title, markdown, JSON.stringify(record.properties), nextRevision).run();
+      await clearWorkspaceTombstone(env.DB, workspaceId, "database-record", id);
       return Response.json({ id, revision: nextRevision, markdown, updatedAt: new Date().toISOString() }, { status: existing ? 200 : 201 });
     }
 
@@ -227,12 +229,19 @@ export async function DELETE(request: Request) {
     if (!source) return Response.json({ error: "data_source_not_found" }, { status: 404 });
     const storedId = scopedResourceId(workspaceId, id);
     const record = await env.DB.prepare(
-      `SELECT id FROM database_records WHERE id = ? AND data_source_id = ?`,
-    ).bind(storedId, sourceId).first();
+      `SELECT id, revision FROM database_records WHERE id = ? AND data_source_id = ?`,
+    ).bind(storedId, sourceId).first<{ id: string; revision: number }>();
     if (!record) return Response.json({ error: "record_not_found" }, { status: 404 });
     await env.DB.prepare(
       `DELETE FROM database_records WHERE id = ? AND data_source_id = ?`,
     ).bind(storedId, sourceId).run();
+    await recordWorkspaceTombstone({
+      db: env.DB,
+      workspaceId,
+      entityKind: "database-record",
+      entityId: storedId,
+      deletedRevision: record.revision + 1,
+    });
     return Response.json({ id, deleted: true });
   } catch (error) {
     const auth = authErrorResponse(error);

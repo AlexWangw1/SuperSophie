@@ -1,5 +1,5 @@
-import { decryptConnectorCredential, encryptConnectorCredential } from "./crypto";
-import type { ConnectorBindings } from "./types";
+import { decryptConnectorCredential, encryptConnectorCredential } from "./crypto.ts";
+import type { ConnectorBindings } from "./types.ts";
 
 const ONEDRIVE_SCOPES = "offline_access Files.ReadWrite User.Read";
 
@@ -19,6 +19,23 @@ type TokenResponse = {
   expires_in?: number;
   error?: string;
 };
+
+type GraphDriveItem = {
+  id?: string;
+  name?: string;
+  eTag?: string;
+  lastModifiedDateTime?: string;
+  webUrl?: string;
+  "@microsoft.graph.downloadUrl"?: string;
+  error?: { code?: string };
+};
+
+export class OneDrivePreconditionError extends Error {
+  constructor() {
+    super("OneDrive 文件在同步期间被另一台设备更新");
+    this.name = "OneDrivePreconditionError";
+  }
+}
 
 function requireOneDriveBindings(bindings: ConnectorBindings) {
   if (!bindings.ONEDRIVE_CLIENT_ID?.trim() || !bindings.ONEDRIVE_CLIENT_SECRET?.trim() || !bindings.CONNECTOR_ENCRYPTION_KEY?.trim()) {
@@ -124,20 +141,62 @@ export async function uploadOneDriveMarkdown(input: {
   accessToken: string;
   fileName: string;
   markdown: string;
+  itemId?: string;
+  ifMatch?: string;
   fetcher?: typeof fetch;
 }) {
   const bytes = new TextEncoder().encode(input.markdown);
   if (bytes.byteLength > 250 * 1024 * 1024) throw new Error("OneDrive 单文件快照超过 250 MB，请改用分片上传");
   const path = encodeURIComponent(input.fileName).replace(/%2F/gi, "/");
-  const response = await (input.fetcher ?? fetch)(`https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`, {
+  const target = input.itemId
+    ? `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(input.itemId)}/content`
+    : `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${input.accessToken}`,
+    "content-type": "text/markdown; charset=utf-8",
+  };
+  if (input.ifMatch) headers["if-match"] = input.ifMatch;
+  const response = await (input.fetcher ?? fetch)(target, {
     method: "PUT",
-    headers: {
-      authorization: `Bearer ${input.accessToken}`,
-      "content-type": "text/markdown; charset=utf-8",
-    },
+    headers,
     body: input.markdown,
   });
-  const payload = await response.json() as { id?: string; name?: string; webUrl?: string; error?: { code?: string } };
+  if (response.status === 412) throw new OneDrivePreconditionError();
+  const payload = await response.json() as GraphDriveItem;
   if (!response.ok || !payload.id) throw new Error(`OneDrive 上传失败${payload.error?.code ? `（${payload.error.code}）` : ""}`);
-  return { id: payload.id, name: payload.name || input.fileName, webUrl: payload.webUrl };
+  return { id: payload.id, name: payload.name || input.fileName, webUrl: payload.webUrl, eTag: payload.eTag };
+}
+
+export async function downloadOneDriveMarkdown(input: {
+  accessToken: string;
+  fileName: string;
+  fetcher?: typeof fetch;
+}) {
+  const fetcher = input.fetcher ?? fetch;
+  const path = encodeURIComponent(input.fileName).replace(/%2F/gi, "/");
+  const metadataResponse = await fetcher(
+    `https://graph.microsoft.com/v1.0/me/drive/root:/${path}?$select=id,name,eTag,lastModifiedDateTime,webUrl,@microsoft.graph.downloadUrl`,
+    { headers: { authorization: `Bearer ${input.accessToken}` } },
+  );
+  if (metadataResponse.status === 404) return null;
+  const metadata = await metadataResponse.json() as GraphDriveItem;
+  if (!metadataResponse.ok || !metadata.id) {
+    throw new Error(`OneDrive 文件读取失败${metadata.error?.code ? `（${metadata.error.code}）` : ""}`);
+  }
+  const downloadUrl = metadata["@microsoft.graph.downloadUrl"];
+  if (!downloadUrl) throw new Error("OneDrive 未返回可用的快照下载地址");
+  const contentResponse = await fetcher(downloadUrl);
+  if (!contentResponse.ok) throw new Error(`OneDrive 快照下载失败（HTTP ${contentResponse.status}）`);
+  const markdown = await contentResponse.text();
+  if (new TextEncoder().encode(markdown).byteLength > 250 * 1024 * 1024) {
+    throw new Error("OneDrive 工作区快照超过 250 MB，已拒绝直接合并");
+  }
+  return {
+    id: metadata.id,
+    name: metadata.name || input.fileName,
+    eTag: metadata.eTag,
+    lastModifiedDateTime: metadata.lastModifiedDateTime,
+    webUrl: metadata.webUrl,
+    markdown,
+  };
 }

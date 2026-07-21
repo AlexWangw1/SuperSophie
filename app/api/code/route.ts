@@ -4,6 +4,7 @@ import { ensureSchema } from "../../../db/ensure";
 import { buildCodeFileMarkdown, languageForPath, normalizeCodePath } from "../../../lib/code-files";
 import { authErrorResponse, requireWorkspace } from "../../../lib/auth";
 import { scopedResourceId } from "../../../lib/workspace-resource";
+import { clearWorkspaceTombstone, recordWorkspaceTombstone } from "../../../lib/sync-tombstones";
 
 const DEFAULT_PROJECT_KEY = "code-project-default";
 const defaultFiles = [
@@ -87,6 +88,7 @@ export async function POST(request: Request) {
       if (!result.meta?.changes) return Response.json({ error: "文件已在另一设备更新", code: "REVISION_CONFLICT" }, { status: 409 });
       await env.DB.prepare(`UPDATE code_projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workspace_id = ?`)
         .bind(projectId, workspaceId).run();
+      await clearWorkspaceTombstone(env.DB, workspaceId, "code-file", payload.file.id);
       return Response.json({ id: payload.file.id, revision, markdown });
     }
 
@@ -99,6 +101,7 @@ export async function POST(request: Request) {
       `INSERT INTO code_files (id, project_id, path, language, content_markdown, content_text)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).bind(id, projectId, path, language, markdown, payload.content).run();
+    await clearWorkspaceTombstone(env.DB, workspaceId, "code-file", id);
     return Response.json({ file: { id, path, language, content: payload.content, revision: 1 } }, { status: 201 });
   } catch (error) {
     const auth = authErrorResponse(error);
@@ -116,9 +119,19 @@ export async function DELETE(request: Request) {
     const id = new URL(request.url).searchParams.get("id");
     if (!id) return Response.json({ error: "文件 id 必填" }, { status: 400 });
     const projectId = await ensureDefaultProject(workspaceId);
+    const current = await env.DB.prepare(`SELECT revision FROM code_files WHERE id = ? AND project_id = ?`)
+      .bind(id, projectId).first<{ revision: number }>();
+    if (!current) return Response.json({ error: "代码文件不存在" }, { status: 404 });
     const result = await env.DB.prepare(`DELETE FROM code_files WHERE id = ? AND project_id = ?`)
       .bind(id, projectId).run() as { meta?: { changes?: number } };
     if (!result.meta?.changes) return Response.json({ error: "代码文件不存在" }, { status: 404 });
+    await recordWorkspaceTombstone({
+      db: env.DB,
+      workspaceId,
+      entityKind: "code-file",
+      entityId: id,
+      deletedRevision: current.revision + 1,
+    });
     return Response.json({ id, deleted: true });
   } catch (error) {
     const auth = authErrorResponse(error);

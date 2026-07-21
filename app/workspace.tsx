@@ -18,7 +18,7 @@ import {
   SquaresFour,
   Waveform,
 } from "@phosphor-icons/react";
-import { cacheSophiePackage, readCachedPage, readCachedSophiePackage } from "../lib/offline-store";
+import { cacheSophiePackage, clearPendingPageDeletion, deleteCachedSophiePackage, listCachedPages, listPendingPageDeletions, queuePendingPageDeletion, readCachedPage, readCachedSophiePackage } from "../lib/offline-store";
 import {
   blocksToMarkdown,
   createSophieAsset,
@@ -547,6 +547,27 @@ const blockLabels: Record<SophieBlock["type"], string> = {
 const slashBlockTypes = (Object.keys(blockLabels) as SophieBlock["type"][]).filter((type) => type !== "image" && type !== "file");
 
 type CloudAssetMetadata = { id: string; name: string; mime: string; size: number; sha256: string; downloadUrl: string };
+type KnowledgePageSummary = { id: string; title: string; icon: string; kind: string; markdown: string; revision: number; updatedAt: string; cloud?: boolean; synced?: boolean };
+
+function knowledgePageSummary(page: SophiePage, state: Pick<KnowledgePageSummary, "cloud" | "synced"> = {}) {
+  return { id: page.id, title: page.title, icon: page.icon ?? "📄", kind: page.kind, markdown: blocksToMarkdown(page), revision: page.revision, updatedAt: page.updatedAt, ...state };
+}
+
+function mergeKnowledgePages(remotePages: KnowledgePageSummary[], localPages: KnowledgePageSummary[]) {
+  const merged = new Map(remotePages.map((page) => [page.id, { ...page, cloud: true, synced: true }]));
+  for (const local of localPages) {
+    const remote = merged.get(local.id);
+    if (!remote) {
+      merged.set(local.id, { ...local, cloud: false, synced: false });
+      continue;
+    }
+    const sameContent = local.revision === remote.revision && local.markdown === remote.markdown;
+    const localIsNewer = local.revision > remote.revision
+      || (local.revision === remote.revision && Date.parse(local.updatedAt) > Date.parse(remote.updatedAt));
+    if (!sameContent && localIsNewer) merged.set(local.id, { ...local, cloud: true, synced: false });
+  }
+  return [...merged.values()].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+}
 
 async function loadCloudPageAssets(documentId: string) {
   const response = await fetch(`/api/assets?documentId=${encodeURIComponent(documentId)}`);
@@ -587,6 +608,8 @@ async function uploadCloudPageAssets(documentId: string, assets: SophiePackageAs
 function NotesView() {
   const [page, setPage] = useState(initialPage);
   const [pageAssets, setPageAssets] = useState<SophiePackageAsset[]>([]);
+  const [pages, setPages] = useState<KnowledgePageSummary[]>([]);
+  const [pageSearch, setPageSearch] = useState("");
   const [saveState, setSaveState] = useState<"saved" | "saving" | "offline" | "conflict">("saved");
   const [slashBlock, setSlashBlock] = useState<string>();
   const [draggedBlock, setDraggedBlock] = useState<string>();
@@ -597,32 +620,67 @@ function NotesView() {
     const lastPageId = localStorage.getItem("supersophie:last-page") || initialPage.id;
     let cancelled = false;
     const load = async () => {
+      const cachedPages = await listCachedPages();
       const cached = await readCachedSophiePackage(lastPageId);
-      if (cached && !cancelled) { setPage(cached.page); setPageAssets(cached.assets); }
+      const cachedSummaries = cachedPages.map((item) => knowledgePageSummary(item, { cloud: false, synced: false }));
+      if (!cancelled && cachedSummaries.length) setPages(cachedSummaries);
+      if (cached && !cancelled) {
+        setPage(cached.page); setPageAssets(cached.assets); setSaveState("offline");
+      }
       else {
         const pageOnly = await readCachedPage(lastPageId);
-        if (pageOnly && !cancelled) setPage(pageOnly);
+        if (pageOnly && !cancelled) {
+          setPage(pageOnly);
+          setPages([knowledgePageSummary(pageOnly, { cloud: false, synced: false })]);
+          setSaveState("offline");
+        }
       }
       if (!navigator.onLine) return;
+      const pendingDeletions = new Set((await listPendingPageDeletions()).map((item) => item.pageId));
+      for (const pageId of pendingDeletions) {
+        try {
+          const deletion = await fetch(`/api/pages?id=${encodeURIComponent(pageId)}`, { method: "DELETE" });
+          if (deletion.ok || deletion.status === 404) {
+            await clearPendingPageDeletion(pageId);
+            pendingDeletions.delete(pageId);
+          }
+        } catch { /* Keep the deletion queued and hide the page until connectivity returns. */ }
+      }
       const response = await fetch("/api/pages");
       if (!response.ok) return;
-      const payload = await response.json() as { pages: Array<{ id: string; markdown: string; revision: number; updatedAt: string }> };
-      const remote = payload.pages.find((item) => item.id === lastPageId);
-      if (!remote) return;
-      const restored = { ...parseSophiePageMarkdown(remote.markdown), id: remote.id, revision: remote.revision, updatedAt: remote.updatedAt };
-      const assets = await loadCloudPageAssets(restored.id);
+      const payload = await response.json() as { pages: KnowledgePageSummary[] };
+      const mergedPages = mergeKnowledgePages(payload.pages.filter((item) => !pendingDeletions.has(item.id)), cachedSummaries);
+      if (!cancelled) setPages(mergedPages);
+      const selected = mergedPages.find((item) => item.id === lastPageId) ?? mergedPages[0];
+      if (!selected) return;
+      localStorage.setItem("supersophie:last-page", selected.id);
+      if (!selected.synced && cached?.page.id === selected.id) return;
+      const restored = { ...parseSophiePageMarkdown(selected.markdown), id: selected.id, revision: selected.revision, updatedAt: selected.updatedAt };
+      let assets = (await readCachedSophiePackage(restored.id))?.assets ?? [];
+      let cloudLoaded = false;
+      if (selected.synced) {
+        try { assets = await loadCloudPageAssets(restored.id); cloudLoaded = true; }
+        catch { cloudLoaded = false; }
+      }
       if (cancelled) return;
       setPage(restored);
       setPageAssets(assets);
       await cacheSophiePackage(restored, assets);
-      setSaveState("saved");
+      setSaveState(cloudLoaded ? "saved" : "offline");
     };
     void load().catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
 
   const updateBlock = (id: string, patch: Partial<SophieBlock>) => {
-    setPage((current) => ({ ...current, blocks: current.blocks.map((block) => block.id === id ? { ...block, ...patch } as SophieBlock : block), updatedAt: new Date().toISOString() }));
+    setPage((current) => ({ ...current, blocks: current.blocks.map((block) => {
+      if (block.id !== id) return block;
+      const next = { ...block, ...patch } as SophieBlock;
+      const nextContent = patch.content;
+      if (next.type === "page-reference" && typeof nextContent === "string") next.url = pages.find((item) => item.title === nextContent.trim())?.id;
+      return next;
+    }), updatedAt: new Date().toISOString() }));
+    setSaveState("offline");
   };
 
   const addBlock = (afterId?: string, type: SophieBlock["type"] = "text") => {
@@ -634,6 +692,7 @@ function NotesView() {
       return { ...current, blocks };
     });
     setSlashBlock(undefined);
+    setSaveState("offline");
   };
 
   const moveBlock = (id: string, direction: -1 | 1) => {
@@ -646,6 +705,7 @@ function NotesView() {
       blocks.splice(nextIndex, 0, moved);
       return { ...current, blocks, updatedAt: new Date().toISOString() };
     });
+    setSaveState("offline");
   };
 
   const dropBlockBefore = (targetId: string) => {
@@ -660,6 +720,7 @@ function NotesView() {
       return { ...current, blocks, updatedAt: new Date().toISOString() };
     });
     setDraggedBlock(undefined);
+    setSaveState("offline");
   };
 
   const save = useCallback(async () => {
@@ -681,6 +742,8 @@ function NotesView() {
       setPage(savedPage);
       await cacheSophiePackage(savedPage, pageAssets);
       await uploadCloudPageAssets(savedPage.id, pageAssets);
+      const summary = knowledgePageSummary(savedPage, { cloud: true, synced: true });
+      setPages((current) => [summary, ...current.filter((item) => item.id !== summary.id)]);
       setSaveState("saved");
     } catch {
       setSaveState("offline");
@@ -693,6 +756,8 @@ function NotesView() {
     try {
       const imported = await readSophiePackageWithAssets(await file.text());
       setPage(imported.page); setPageAssets(imported.assets);
+      const summary = knowledgePageSummary(imported.page, { cloud: false, synced: false });
+      setPages((current) => [summary, ...current.filter((item) => item.id !== summary.id)]);
       await cacheSophiePackage(imported.page, imported.assets);
       localStorage.setItem("supersophie:last-page", imported.page.id);
       setSaveState("offline");
@@ -717,18 +782,75 @@ function NotesView() {
     anchor.click();
   };
 
+  const openKnowledgePage = async (summary: KnowledgePageSummary, preserveCurrent = true) => {
+    if (summary.id === page.id) return;
+    try {
+      if (preserveCurrent) {
+        await cacheSophiePackage(page, pageAssets);
+        const currentState = pages.find((item) => item.id === page.id);
+        const currentSummary = knowledgePageSummary(page, { cloud: currentState?.cloud, synced: saveState === "saved" && currentState?.synced });
+        setPages((current) => current.map((item) => item.id === currentSummary.id ? currentSummary : item));
+      }
+      const next = { ...parseSophiePageMarkdown(summary.markdown), id: summary.id, revision: summary.revision, updatedAt: summary.updatedAt };
+      let assets = (await readCachedSophiePackage(next.id))?.assets ?? [];
+      let cloudLoaded = false;
+      if (navigator.onLine && summary.synced) {
+        try { assets = await loadCloudPageAssets(next.id); cloudLoaded = true; }
+        catch { cloudLoaded = false; }
+      }
+      setPage(next);
+      setPageAssets(assets);
+      localStorage.setItem("supersophie:last-page", next.id);
+      await cacheSophiePackage(next, assets);
+      setSaveState(summary.synced && cloudLoaded ? "saved" : "offline");
+    } catch (error) { alert(error instanceof Error ? error.message : "页面打开失败"); }
+  };
+
+  const createKnowledgePage = async (preserveCurrent = true) => {
+    if (preserveCurrent) await cacheSophiePackage(page, pageAssets).catch(() => undefined);
+    const currentState = pages.find((item) => item.id === page.id);
+    const currentSummary = knowledgePageSummary(page, { cloud: currentState?.cloud, synced: saveState === "saved" && currentState?.synced });
+    const now = new Date().toISOString();
+    const next: SophiePage = { id: crypto.randomUUID(), title: "无标题页面", icon: "📄", kind: "page", revision: 1, updatedAt: now, properties: {}, blocks: [{ id: crypto.randomUUID(), type: "text", content: "" }] };
+    const summary = knowledgePageSummary(next, { cloud: false, synced: false });
+    setPages((current) => [summary, ...current.map((item) => preserveCurrent && item.id === currentSummary.id ? currentSummary : item)]);
+    setPage(next);
+    setPageAssets([]);
+    localStorage.setItem("supersophie:last-page", next.id);
+    await cacheSophiePackage(next, []);
+    setSaveState("offline");
+  };
+
+  const deleteKnowledgePage = async () => {
+    if (!confirm(`确定删除「${page.title}」吗？OneDrive 会通过删除墓碑同步。`)) return;
+    if (navigator.onLine) {
+      try {
+        const response = await fetch(`/api/pages?id=${encodeURIComponent(page.id)}`, { method: "DELETE" });
+        if (!response.ok && response.status !== 404) { alert(await responseError(response)); return; }
+      } catch { await queuePendingPageDeletion(page.id); }
+    } else await queuePendingPageDeletion(page.id);
+    const remaining = pages.filter((item) => item.id !== page.id);
+    await deleteCachedSophiePackage(page.id).catch(() => undefined);
+    setPages(remaining);
+    if (remaining[0]) await openKnowledgePage(remaining[0], false);
+    else await createKnowledgePage(false);
+  };
+
+  const filteredPages = useMemo(() => {
+    const query = pageSearch.trim().toLocaleLowerCase();
+    return query ? pages.filter((item) => `${item.title}\n${item.markdown}`.toLocaleLowerCase().includes(query)) : pages;
+  }, [pageSearch, pages]);
+  const backlinks = useMemo(() => pages.filter((item) => item.id !== page.id && (item.markdown.includes(`sophie-page:${page.id}`) || item.markdown.includes(`[[${page.title}]]`))), [page.id, page.title, pages]);
+
   return (
     <main className="notes-layout">
       <aside className="page-tree">
-        <div className="tree-title"><span>知识库</span><button>＋</button></div>
-        <button className="tree-item active"><span>✦</span><strong>SuperSophie 发布计划</strong></button>
-        <button className="tree-item"><span>◫</span><strong>产品与架构</strong><i>⌄</i></button>
-        <button className="tree-item nested"><span>·</span><strong>同步架构</strong></button>
-        <button className="tree-item nested"><span>·</span><strong>.sophie 文件规范</strong></button>
-        <button className="tree-item"><span>⌘</span><strong>工程笔记</strong><i>›</i></button>
-        <button className="tree-item"><span>◎</span><strong>连接器手册</strong><i>›</i></button>
+        <div className="tree-title"><span>知识库 · {pages.length}</span><button onClick={() => void createKnowledgePage()} aria-label="新建页面">＋</button></div>
+        <label className="tree-search"><span>⌕</span><input value={pageSearch} onChange={(event) => setPageSearch(event.target.value)} placeholder="搜索页面与 Markdown" /></label>
+        <div className="tree-pages">{filteredPages.map((item) => <button className={`tree-item ${item.id === page.id ? "active" : ""}`} key={item.id} onClick={() => void openKnowledgePage(item)}><span>{item.icon || "📄"}</span><strong>{item.title}</strong><i>{item.kind === "database-item" ? "▦" : ""}</i></button>)}{filteredPages.length === 0 && <p className="tree-empty">没有匹配的页面</p>}</div>
         <div className="tree-spacer" />
-        <button className="tree-item muted"><span>⌫</span><strong>回收站</strong></button>
+        <div className="tree-backlink-count"><span>↩</span><strong>{backlinks.length} 个反向链接</strong></div>
+        <button className="tree-item muted tree-delete" onClick={() => void deleteKnowledgePage()}><span>⌫</span><strong>删除当前页面</strong></button>
       </aside>
       <section className="editor-shell">
         <div className="editor-actions">
@@ -740,7 +862,7 @@ function NotesView() {
         <article className="editor-page">
           <div className="page-cover"><span>SUPER SOPHIE · PRODUCT</span><i>✦</i></div>
           <div className="page-icon">✦</div>
-          <input className="page-title-input" value={page.title} onChange={(event) => setPage({ ...page, title: event.target.value })} aria-label="页面标题" />
+          <input className="page-title-input" value={page.title} onChange={(event) => { setPage({ ...page, title: event.target.value, updatedAt: new Date().toISOString() }); setSaveState("offline"); }} aria-label="页面标题" />
           <div className="page-properties">
             <span><i>◉</i> 状态 <b className="tag purple">进行中</b></span><span><i>↑</i> 优先级 <b className="tag red">High</b></span><span><i>♙</i> 负责人 <b>Sophie</b></span><span><i>#</i> 标签 <b className="tag blue">Product</b></span>
           </div>
@@ -753,8 +875,9 @@ function NotesView() {
                 {block.type === "quote" && <span className="quote-line" />}
                 {block.type === "image" && (() => { const asset = pageAssets.find((item) => item.id === block.assetId); return asset ? <figure className="image-block"><Image unoptimized src={sophieAssetDataUrl(asset)} width={1200} height={800} alt={block.content} /><figcaption>{block.content} · {(asset.size / 1024).toFixed(1)} KB</figcaption></figure> : <div className="missing-asset">图片附件缺失</div>; })()}
                 {block.type === "file" && (() => { const asset = pageAssets.find((item) => item.id === block.assetId); return asset ? <button className="file-block" onClick={() => downloadAsset(asset)}><span>⇩</span><strong>{asset.name}</strong><small>{asset.mime} · {(asset.size / 1024).toFixed(1)} KB</small></button> : <div className="missing-asset">文件附件缺失</div>; })()}
+                {block.type === "page-reference" && <div className="page-reference-block"><span>↗</span><select value={block.url ?? ""} onChange={(event) => { const target = pages.find((item) => item.id === event.target.value); updateBlock(block.id, { url: target?.id, content: target?.title ?? "" }); }}><option value="">选择一个页面…</option>{pages.filter((item) => item.id !== page.id).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><button disabled={!block.url} onClick={() => { const target = pages.find((item) => item.id === block.url); if (target) void openKnowledgePage(target); }}>打开</button></div>}
                 {block.type === "divider" && <hr className="divider-block" />}
-                {!(["image", "file", "divider"] as SophieBlock["type"][]).includes(block.type) && <textarea
+                {!(["image", "file", "page-reference", "divider"] as SophieBlock["type"][]).includes(block.type) && <textarea
                   className="block-input"
                   rows={block.type === "code" ? 3 : 1}
                   value={block.content}
@@ -765,7 +888,7 @@ function NotesView() {
                     if (event.altKey && event.key === "ArrowUp") { event.preventDefault(); moveBlock(block.id, -1); }
                     if (event.altKey && event.key === "ArrowDown") { event.preventDefault(); moveBlock(block.id, 1); }
                     if (event.key === "Enter" && !event.shiftKey && block.type !== "code") { event.preventDefault(); addBlock(block.id); }
-                    if (event.key === "Backspace" && !block.content && page.blocks.length > 1) { setPage((current) => ({ ...current, blocks: current.blocks.filter((item) => item.id !== block.id) })); }
+                    if (event.key === "Backspace" && !block.content && page.blocks.length > 1) { setPage((current) => ({ ...current, blocks: current.blocks.filter((item) => item.id !== block.id), updatedAt: new Date().toISOString() })); setSaveState("offline"); }
                   }}
                 />}
                 {slashBlock === block.id && (
@@ -778,6 +901,7 @@ function NotesView() {
             ))}
             <button className="new-block" onClick={() => addBlock()}>＋ 添加一个块</button>
           </div>
+          <section className="page-backlinks"><header><span>↩</span><div><strong>反向链接</strong><small>引用「{page.title}」的页面</small></div><b>{backlinks.length}</b></header>{backlinks.length ? backlinks.map((item) => <button key={item.id} onClick={() => void openKnowledgePage(item)}><span>{item.icon || "📄"}</span><div><strong>{item.title}</strong><small>{item.updatedAt.slice(0, 10)}</small></div><i>›</i></button>) : <p>还没有其他页面引用这里。使用「页面引用」块并输入当前标题即可建立连接。</p>}</section>
         </article>
       </section>
     </main>

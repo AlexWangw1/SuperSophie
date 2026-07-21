@@ -86,6 +86,7 @@ export function blocksToMarkdown(page: SophiePage) {
 
   const body = page.blocks.map((block) => {
     assertStableId(block.id, "块 id");
+    if (block.type === "page-reference" && block.url) assertStableId(block.url, "页面引用 id");
     const details = [
       `sophie:block=${block.id}`,
       `type=${block.type}`,
@@ -103,7 +104,7 @@ export function blocksToMarkdown(page: SophiePage) {
     if (block.type === "divider") return `${meta}\n---`;
     if (block.type === "image") return `${meta}\n![${block.content}](sophie-asset:${block.assetId || "missing"})`;
     if (block.type === "file") return `${meta}\n[${block.content}](sophie-asset:${block.assetId || "missing"})`;
-    if (block.type === "page-reference") return `${meta}\n[[${block.content}]]`;
+    if (block.type === "page-reference") return `${meta}\n[[${block.content}]]${block.url ? `(sophie-page:${block.url})` : ""}`;
     if (block.type === "database") return `${meta}\n{{database:${block.content}}}`;
     if (block.type === "code") {
       const fence = codeFence(block.content);
@@ -144,7 +145,7 @@ function blockContent(type: SophieBlock["type"], raw: string) {
   if (type === "divider") return "";
   if (type === "image") return raw.match(/^!\[([\s\S]*?)\]\(sophie-asset:/)?.[1] ?? "";
   if (type === "file") return raw.match(/^\[([\s\S]*?)\]\(sophie-asset:/)?.[1] ?? "";
-  if (type === "page-reference") return raw.match(/^\[\[([\s\S]*)\]\]$/)?.[1] ?? raw;
+  if (type === "page-reference") return raw.match(/^\[\[([\s\S]*?)\]\](?:\(sophie-page:[A-Za-z0-9._:-]+\))?$/)?.[1] ?? raw;
   if (type === "database") return raw.match(/^\{\{database:([\s\S]*)\}\}$/)?.[1] ?? raw;
   return raw;
 }
@@ -186,6 +187,7 @@ export function parseSophiePageMarkdown(markdown: string): SophiePage {
     assertStableId(block.id, "块 id");
     if (type === "todo") block.checked = match[3] === "true";
     if (type === "image" || type === "file") block.assetId = match[4];
+    if (type === "page-reference") block.url = raw.match(/\(sophie-page:([A-Za-z0-9._:-]+)\)$/)?.[1];
     if (type === "code") {
       const code = raw.match(/^(`{3,})([^\r\n]*)\r?\n([\s\S]*?)\r?\n\1$/);
       block.language = code?.[2] || "text";

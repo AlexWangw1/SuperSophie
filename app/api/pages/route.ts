@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { ensureSchema } from "../../../db/ensure";
 import { authErrorResponse, requireWorkspace } from "../../../lib/auth";
 import { publicResourceId, scopedResourceId } from "../../../lib/workspace-resource";
-import { clearWorkspaceTombstone } from "../../../lib/sync-tombstones";
+import { clearWorkspaceTombstone, recordWorkspaceTombstone } from "../../../lib/sync-tombstones";
 
 type PagePayload = {
   id?: string;
@@ -80,5 +80,26 @@ export async function POST(request: Request) {
     const auth = authErrorResponse(error);
     if (auth) return auth;
     return Response.json({ error: error instanceof Error ? error.message : "Unable to save page" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const { workspaceId } = await requireWorkspace(request, { write: true });
+    const id = new URL(request.url).searchParams.get("id")?.trim();
+    if (!id || !/^[A-Za-z0-9._:-]{1,160}$/.test(id)) return Response.json({ error: "invalid_page_id" }, { status: 400 });
+    const storedId = scopedResourceId(workspaceId, id);
+    await ensureSchema();
+    const page = await env.DB.prepare(`SELECT revision FROM documents WHERE id = ? AND workspace_id = ? LIMIT 1`)
+      .bind(storedId, workspaceId).first<{ revision: number }>();
+    if (!page) return Response.json({ error: "page_not_found" }, { status: 404 });
+    await env.DB.prepare(`DELETE FROM document_assets WHERE document_id = ? AND workspace_id = ?`).bind(storedId, workspaceId).run();
+    await env.DB.prepare(`DELETE FROM documents WHERE id = ? AND workspace_id = ?`).bind(storedId, workspaceId).run();
+    await recordWorkspaceTombstone({ db: env.DB, workspaceId, entityKind: "document", entityId: storedId, deletedRevision: page.revision + 1 });
+    return Response.json({ id, deleted: true });
+  } catch (error) {
+    const auth = authErrorResponse(error);
+    if (auth) return auth;
+    return Response.json({ error: error instanceof Error ? error.message : "Unable to delete page" }, { status: 500 });
   }
 }

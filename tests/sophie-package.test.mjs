@@ -52,7 +52,7 @@ test("reconstructs editable blocks and properties from the Markdown truth", () =
     { id: "b-divider", type: "divider", content: "" },
     { id: "b-image", type: "image", content: "图片", assetId: "asset-1" },
     { id: "b-file", type: "file", content: "文件", assetId: "asset-2" },
-    { id: "b-page", type: "page-reference", content: "另一页" },
+    { id: "b-page", type: "page-reference", content: "另一页", url: "page-other" },
     { id: "b-database", type: "database", content: "tasks" },
     { id: "b-code", type: "code", language: "typescript", content: "const fence = ```nested```;" },
   ];

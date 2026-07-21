@@ -281,6 +281,15 @@ export function ensureSchema() {
     )`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS asset_ownership_workspace_idx
       ON asset_ownership (workspace_id, created_at DESC)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS document_assets (
+      document_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (document_id, asset_id)
+    )`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS document_assets_workspace_idx
+      ON document_assets (workspace_id, created_at DESC)`),
   ]);
   return schemaReady;
 }

@@ -24,6 +24,7 @@ import {
   createSophieAsset,
   createSophiePackage,
   downloadSophiePackage,
+  parseSophiePageMarkdown,
   readSophiePackageWithAssets,
   sophieAssetDataUrl,
   type SophieBlock,
@@ -545,6 +546,44 @@ const blockLabels: Record<SophieBlock["type"], string> = {
 };
 const slashBlockTypes = (Object.keys(blockLabels) as SophieBlock["type"][]).filter((type) => type !== "image" && type !== "file");
 
+type CloudAssetMetadata = { id: string; name: string; mime: string; size: number; sha256: string; downloadUrl: string };
+
+async function loadCloudPageAssets(documentId: string) {
+  const response = await fetch(`/api/assets?documentId=${encodeURIComponent(documentId)}`);
+  if (!response.ok) throw new Error(await responseError(response));
+  const payload = await response.json() as { assets: CloudAssetMetadata[] };
+  const total = payload.assets.reduce((sum, asset) => sum + asset.size, 0);
+  if (total > 64 * 1024 * 1024) throw new Error("页面附件总大小超过 64 MB");
+  const assets: SophiePackageAsset[] = [];
+  for (const metadata of payload.assets) {
+    const download = await fetch(metadata.downloadUrl);
+    if (!download.ok) throw new Error(`附件 ${metadata.name} 下载失败`);
+    const asset = await createSophieAsset({ id: metadata.id, name: metadata.name, mime: metadata.mime, bytes: await download.arrayBuffer() });
+    if (asset.size !== metadata.size || asset.sha256 !== metadata.sha256) throw new Error(`附件 ${metadata.name} 校验失败`);
+    assets.push(asset);
+  }
+  return assets;
+}
+
+async function uploadCloudPageAssets(documentId: string, assets: SophiePackageAsset[]) {
+  const listing = await fetch(`/api/assets?documentId=${encodeURIComponent(documentId)}`);
+  if (!listing.ok) throw new Error(await responseError(listing));
+  const existing = await listing.json() as { assets: CloudAssetMetadata[] };
+  const uploaded = new Set(existing.assets.map((asset) => `${asset.id}\0${asset.sha256}`));
+  for (const asset of assets) {
+    if (uploaded.has(`${asset.id}\0${asset.sha256}`)) continue;
+    const binary = Uint8Array.from(atob(asset.data), (character) => character.charCodeAt(0));
+    const form = new FormData();
+    form.set("file", new File([binary.buffer as ArrayBuffer], asset.name, { type: asset.mime }));
+    form.set("assetId", asset.id);
+    form.set("documentId", documentId);
+    form.set("sha256", asset.sha256);
+    const response = await fetch("/api/assets", { method: "POST", body: form });
+    const result = await response.json() as { id?: string; error?: string };
+    if (!response.ok || result.id !== asset.id) throw new Error(result.error || `附件 ${asset.name} 上传失败`);
+  }
+}
+
 function NotesView() {
   const [page, setPage] = useState(initialPage);
   const [pageAssets, setPageAssets] = useState<SophiePackageAsset[]>([]);
@@ -556,10 +595,30 @@ function NotesView() {
 
   useEffect(() => {
     const lastPageId = localStorage.getItem("supersophie:last-page") || initialPage.id;
-    readCachedSophiePackage(lastPageId).then((cached) => {
-      if (cached) { setPage(cached.page); setPageAssets(cached.assets); return; }
-      return readCachedPage(lastPageId).then((pageOnly) => pageOnly && setPage(pageOnly));
-    }).catch(() => undefined);
+    let cancelled = false;
+    const load = async () => {
+      const cached = await readCachedSophiePackage(lastPageId);
+      if (cached && !cancelled) { setPage(cached.page); setPageAssets(cached.assets); }
+      else {
+        const pageOnly = await readCachedPage(lastPageId);
+        if (pageOnly && !cancelled) setPage(pageOnly);
+      }
+      if (!navigator.onLine) return;
+      const response = await fetch("/api/pages");
+      if (!response.ok) return;
+      const payload = await response.json() as { pages: Array<{ id: string; markdown: string; revision: number; updatedAt: string }> };
+      const remote = payload.pages.find((item) => item.id === lastPageId);
+      if (!remote) return;
+      const restored = { ...parseSophiePageMarkdown(remote.markdown), id: remote.id, revision: remote.revision, updatedAt: remote.updatedAt };
+      const assets = await loadCloudPageAssets(restored.id);
+      if (cancelled) return;
+      setPage(restored);
+      setPageAssets(assets);
+      await cacheSophiePackage(restored, assets);
+      setSaveState("saved");
+    };
+    void load().catch(() => undefined);
+    return () => { cancelled = true; };
   }, []);
 
   const updateBlock = (id: string, patch: Partial<SophieBlock>) => {
@@ -618,7 +677,10 @@ function NotesView() {
       if (response.status === 409) { setSaveState("conflict"); return; }
       if (!response.ok) throw new Error("save failed");
       const result = await response.json() as { revision: number; updatedAt: string };
-      setPage((current) => ({ ...current, revision: result.revision, updatedAt: result.updatedAt }));
+      const savedPage = { ...nextPage, revision: result.revision, updatedAt: result.updatedAt };
+      setPage(savedPage);
+      await cacheSophiePackage(savedPage, pageAssets);
+      await uploadCloudPageAssets(savedPage.id, pageAssets);
       setSaveState("saved");
     } catch {
       setSaveState("offline");

@@ -270,4 +270,15 @@ export const assetOwnership = sqliteTable("asset_ownership", {
   assetId: text("asset_id").notNull(),
   workspaceId: text("workspace_id").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  uniqueIndex("asset_ownership_asset_workspace_idx").on(table.assetId, table.workspaceId),
+]);
+
+export const documentAssets = sqliteTable("document_assets", {
+  documentId: text("document_id").notNull(),
+  assetId: text("asset_id").notNull(),
+  workspaceId: text("workspace_id").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("document_assets_document_asset_idx").on(table.documentId, table.assetId),
+]);

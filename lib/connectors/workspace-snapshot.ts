@@ -157,7 +157,7 @@ export async function buildWorkspaceSnapshotMarkdown(db: D1Database, workspaceId
     "",
     "# SuperSophie 工作区快照",
     "",
-    "此 Markdown 文件是可恢复、可合并的工作区真相源。连接器密钥、OAuth 令牌和模型密钥永不写入快照；附件字节仍由 App Cloud R2 管理，清单用于完整性核对。",
+    "此 Markdown 文件是可恢复、可合并的工作区真相源。连接器密钥、OAuth 令牌和模型密钥永不写入快照；附件清单以 SHA-256 校验，附件字节由 App Cloud R2 与已连接的 OneDrive 内容寻址副本共同保存。",
     "",
     ...sections.flatMap(([title, entries]) => [`## ${title}`, "", ...(entries.length ? entries : ["_暂无内容_", ""]), ""]),
   ].join("\n");

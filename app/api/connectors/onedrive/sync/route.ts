@@ -13,6 +13,7 @@ import {
   WORKSPACE_SNAPSHOT_VERSION,
 } from "../../../../../lib/connectors/workspace-snapshot";
 import { mergeWorkspaceSnapshot, type WorkspaceMergeResult } from "../../../../../lib/connectors/workspace-sync";
+import { syncOneDriveAssets, type OneDriveAssetSyncResult } from "../../../../../lib/connectors/onedrive-assets";
 
 function remotePath(workspaceId: string) {
   return workspaceId === "default"
@@ -36,15 +37,19 @@ export async function POST(request: Request) {
     workspaceId = (await requireWorkspace(request, { write: true })).workspaceId;
     path = remotePath(workspaceId);
     await ensureSchema();
+    if (!env.FILES) throw new Error("R2 binding FILES is unavailable");
     const { accessToken, accountLabel } = await getOneDriveAccessToken({ db: env.DB, bindings: env, workspaceId });
     const merge = emptyMerge();
     let uploaded: Awaited<ReturnType<typeof uploadOneDriveMarkdown>> | undefined;
+    let assets: OneDriveAssetSyncResult = { downloaded: 0, uploaded: 0, repaired: 0, unchanged: 0, skipped: 0 };
     let legacyArchived = false;
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const remote = await downloadOneDriveMarkdown({ accessToken, fileName: path.slice(1) });
+      let remoteSnapshot: ReturnType<typeof parseWorkspaceSnapshotMarkdown> | null = null;
       if (remote) {
         const snapshot = parseWorkspaceSnapshotMarkdown(remote.markdown);
+        remoteSnapshot = snapshot;
         if (snapshot.workspaceId !== workspaceId) throw new Error("OneDrive 同名快照属于另一个工作区，已拒绝覆盖");
         if (snapshot.version < WORKSPACE_SNAPSHOT_VERSION && !legacyArchived) {
           const stamp = snapshot.generatedAt.replace(/[:.]/g, "-");
@@ -57,6 +62,14 @@ export async function POST(request: Request) {
         }
         addMerge(merge, await mergeWorkspaceSnapshot(env.DB, workspaceId, snapshot));
       }
+
+      assets = await syncOneDriveAssets({
+        db: env.DB,
+        files: env.FILES,
+        workspaceId,
+        accessToken,
+        remoteSnapshot,
+      });
 
       const markdown = await buildWorkspaceSnapshotMarkdown(env.DB, workspaceId);
       try {
@@ -92,6 +105,11 @@ export async function POST(request: Request) {
       `- 保留本地较新版本：${merge.keptLocal}`,
       `- 需要人工处理的冲突：${merge.conflicts}`,
       `- 无法导入的清单项：${merge.skipped}`,
+      `- 下载附件：${assets.downloaded}`,
+      `- 修复本地附件：${assets.repaired}`,
+      `- 上传附件：${assets.uploaded}`,
+      `- 已存在附件：${assets.unchanged}`,
+      `- 跳过附件：${assets.skipped}`,
       `- 旧版快照已归档：${legacyArchived ? "是" : "否"}`,
       "",
       "合并后的 Markdown 真相源已写回 OneDrive；凭据未包含在快照中。",
@@ -107,6 +125,7 @@ export async function POST(request: Request) {
       accountLabel,
       webUrl: uploaded.webUrl ?? null,
       merge,
+      assets,
       legacyArchived,
     });
   } catch (error) {

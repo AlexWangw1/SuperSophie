@@ -23,6 +23,7 @@ type TokenResponse = {
 type GraphDriveItem = {
   id?: string;
   name?: string;
+  size?: number;
   eTag?: string;
   lastModifiedDateTime?: string;
   webUrl?: string;
@@ -198,5 +199,60 @@ export async function downloadOneDriveMarkdown(input: {
     lastModifiedDateTime: metadata.lastModifiedDateTime,
     webUrl: metadata.webUrl,
     markdown,
+  };
+}
+
+export async function uploadOneDriveBinary(input: {
+  accessToken: string;
+  fileName: string;
+  bytes: ArrayBuffer;
+  contentType?: string;
+  fetcher?: typeof fetch;
+}) {
+  if (input.bytes.byteLength > 250 * 1024 * 1024) throw new Error("OneDrive 单附件超过 250 MB，请改用分片上传");
+  const path = encodeURIComponent(input.fileName).replace(/%2F/gi, "/");
+  const response = await (input.fetcher ?? fetch)(`https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${input.accessToken}`,
+      "content-type": input.contentType || "application/octet-stream",
+    },
+    body: input.bytes,
+  });
+  const payload = await response.json() as GraphDriveItem;
+  if (!response.ok || !payload.id) throw new Error(`OneDrive 附件上传失败${payload.error?.code ? `（${payload.error.code}）` : ""}`);
+  return { id: payload.id, name: payload.name || input.fileName, size: payload.size ?? input.bytes.byteLength, eTag: payload.eTag };
+}
+
+export async function downloadOneDriveBinary(input: {
+  accessToken: string;
+  fileName: string;
+  maxBytes?: number;
+  fetcher?: typeof fetch;
+}) {
+  const fetcher = input.fetcher ?? fetch;
+  const maximum = input.maxBytes ?? 32 * 1024 * 1024;
+  const path = encodeURIComponent(input.fileName).replace(/%2F/gi, "/");
+  const metadataResponse = await fetcher(
+    `https://graph.microsoft.com/v1.0/me/drive/root:/${path}?$select=id,name,size,eTag,lastModifiedDateTime,@microsoft.graph.downloadUrl`,
+    { headers: { authorization: `Bearer ${input.accessToken}` } },
+  );
+  if (metadataResponse.status === 404) return null;
+  const metadata = await metadataResponse.json() as GraphDriveItem;
+  if (!metadataResponse.ok || !metadata.id) throw new Error(`OneDrive 附件读取失败${metadata.error?.code ? `（${metadata.error.code}）` : ""}`);
+  if (typeof metadata.size === "number" && metadata.size > maximum) throw new Error("OneDrive 附件超过允许大小");
+  const downloadUrl = metadata["@microsoft.graph.downloadUrl"];
+  if (!downloadUrl) throw new Error("OneDrive 未返回可用的附件下载地址");
+  const contentResponse = await fetcher(downloadUrl);
+  if (!contentResponse.ok) throw new Error(`OneDrive 附件下载失败（HTTP ${contentResponse.status}）`);
+  const bytes = await contentResponse.arrayBuffer();
+  if (bytes.byteLength > maximum) throw new Error("OneDrive 附件超过允许大小");
+  return {
+    id: metadata.id,
+    name: metadata.name || input.fileName,
+    size: metadata.size ?? bytes.byteLength,
+    eTag: metadata.eTag,
+    lastModifiedDateTime: metadata.lastModifiedDateTime,
+    bytes,
   };
 }

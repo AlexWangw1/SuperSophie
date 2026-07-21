@@ -84,7 +84,9 @@ $connectorKeyBytes = [byte[]]::new(32)
 - 删除以 `workspace_tombstones` 墓碑传播，较新的修改不会被较旧删除覆盖。
 - 写回携带读取到的 eTag；同步期间远端改变会重新读取并重试。
 - v1 旧快照先另存归档，再升级为 v2；凭据始终不进入快照。
-- R2 附件字节尚未镜像到 OneDrive，快照只保存名称、大小、MIME 与 SHA-256 清单。
+- 页面附件先以稳定公开 ID 和 SHA-256 写入 App Cloud R2；同步时再以 `workspace + SHA-256` 内容寻址文件镜像到 OneDrive。
+- 新设备按 Markdown 清单下载附件，下载 URL 不携带 OAuth Bearer Token，并在写入 R2 前同时核对大小与 SHA-256；R2 缺失时可由 OneDrive 自动修复。
+- OneDrive 中的附件是不可变内容寻址副本；删除页面不会立即清理远端孤立字节，避免另一台离线设备仍引用附件时发生不可恢复的数据丢失。
 
 - OAuth 授权码流程：https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow
 - 文件下载：https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0
@@ -92,6 +94,6 @@ $connectorKeyBytes = [byte[]]::new(32)
 
 ## 当前边界
 
-- 已实现：Telegram、企业微信、QQ 的审核后出站；OneDrive OAuth、双向 Markdown 合并、删除墓碑和人工冲突处理；App Cloud D1/R2；多账户、工作区和设备会话隔离。
-- 尚未实现：社交平台入站事件、Chat SDK webhook、OneDrive 附件字节镜像和后台自动增量触发、自托管 S3/WebDAV 适配器。
+- 已实现：Telegram、企业微信、QQ 的审核后出站；OneDrive OAuth、双向 Markdown 合并、附件字节镜像、删除墓碑和人工冲突处理；App Cloud D1/R2；多账户、工作区和设备会话隔离。
+- 尚未实现：社交平台入站事件、Chat SDK webhook、后台自动增量触发和自托管 S3/WebDAV 适配器。
 - Chat SDK 已作为未来入站机器人层完成技术评估，但当前出站场景直接使用各平台官方 API，减少不必要的状态依赖。

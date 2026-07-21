@@ -115,6 +115,87 @@ export function blocksToMarkdown(page: SophiePage) {
   return `${frontmatter}${body}\n`;
 }
 
+function parseMarkdownScalar(source: string): string | number | boolean | string[] {
+  const value = source.trim();
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean") return parsed;
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) return parsed;
+  } catch { /* Legacy unquoted Markdown value. */ }
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
+  return value;
+}
+
+function frontmatterField(frontmatter: string, name: string) {
+  const match = frontmatter.match(new RegExp(`^${name}:\\s*(.+)$`, "m"));
+  return match ? parseMarkdownScalar(match[1]) : undefined;
+}
+
+function blockContent(type: SophieBlock["type"], raw: string) {
+  if (type === "heading") return raw.replace(/^##\s?/, "");
+  if (type === "todo") return raw.replace(/^-\s+\[[ xX]\]\s?/, "");
+  if (type === "bulleted-list") return raw.replace(/^-\s?/, "");
+  if (type === "numbered-list") return raw.replace(/^1\.\s?/, "");
+  if (type === "quote") return raw.replace(/^>\s?/, "");
+  if (type === "callout") return raw.replace(/^> \[!NOTE\]\r?\n>\s?/, "");
+  if (type === "toggle") return raw.match(/^<details><summary>([\s\S]*)<\/summary><\/details>$/)?.[1] ?? raw;
+  if (type === "divider") return "";
+  if (type === "image") return raw.match(/^!\[([\s\S]*?)\]\(sophie-asset:/)?.[1] ?? "";
+  if (type === "file") return raw.match(/^\[([\s\S]*?)\]\(sophie-asset:/)?.[1] ?? "";
+  if (type === "page-reference") return raw.match(/^\[\[([\s\S]*)\]\]$/)?.[1] ?? raw;
+  if (type === "database") return raw.match(/^\{\{database:([\s\S]*)\}\}$/)?.[1] ?? raw;
+  return raw;
+}
+
+export function parseSophiePageMarkdown(markdown: string): SophiePage {
+  const envelope = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!envelope) throw new Error("页面 Markdown 缺少 SuperSophie frontmatter");
+  const frontmatter = envelope[1];
+  const id = String(frontmatterField(frontmatter, "id") ?? "");
+  const title = String(frontmatterField(frontmatter, "title") ?? "");
+  const kind = String(frontmatterField(frontmatter, "kind") ?? "page");
+  const revision = Number(frontmatterField(frontmatter, "revision") ?? 1);
+  const updatedAt = String(frontmatterField(frontmatter, "updatedAt") ?? new Date(0).toISOString());
+  assertStableId(id, "页面 id");
+  if (!title || !kind || !Number.isInteger(revision) || revision < 1 || Number.isNaN(Date.parse(updatedAt))) throw new Error("页面 Markdown frontmatter 无效");
+
+  const properties: SophiePage["properties"] = {};
+  const propertySection = frontmatter.match(/(?:^|\r?\n)properties:\r?\n([\s\S]*)$/)?.[1] ?? "";
+  for (const line of propertySection.split(/\r?\n/)) {
+    const match = line.match(/^\s{2}("(?:\\.|[^"\\])*"|[^:]+):\s*(.*)$/);
+    if (!match || match[1] === "{}") continue;
+    let key = match[1].trim();
+    try { key = JSON.parse(key) as string; } catch { /* Legacy plain property name. */ }
+    if (key) properties[key] = parseMarkdownScalar(match[2]);
+  }
+
+  const body = markdown.slice(envelope[0].length);
+  const expression = /<!-- sophie:block=([A-Za-z0-9._:-]+) type=([a-z-]+)(?: checked=(true|false))?(?: asset=([A-Za-z0-9._:-]+))? -->\r?\n/g;
+  const matches = [...body.matchAll(expression)];
+  const validTypes = new Set<SophieBlock["type"]>(["text", "heading", "todo", "quote", "callout", "code", "bulleted-list", "numbered-list", "toggle", "divider", "image", "file", "page-reference", "database"]);
+  const blocks = matches.map((match, index): SophieBlock => {
+    const type = match[2] as SophieBlock["type"];
+    if (!validTypes.has(type)) throw new Error(`页面包含不支持的块类型：${match[2]}`);
+    const start = (match.index ?? 0) + match[0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index ?? body.length : body.length;
+    let raw = body.slice(start, end);
+    raw = index + 1 < matches.length ? raw.replace(/\r?\n\r?\n$/, "") : raw.replace(/\r?\n$/, "");
+    const block: SophieBlock = { id: match[1], type, content: blockContent(type, raw) };
+    assertStableId(block.id, "块 id");
+    if (type === "todo") block.checked = match[3] === "true";
+    if (type === "image" || type === "file") block.assetId = match[4];
+    if (type === "code") {
+      const code = raw.match(/^(`{3,})([^\r\n]*)\r?\n([\s\S]*?)\r?\n\1$/);
+      block.language = code?.[2] || "text";
+      block.content = code?.[3] ?? raw;
+    }
+    return block;
+  });
+  return { id, title, kind, revision, updatedAt, properties, blocks };
+}
+
 function legacyBlocksToMarkdown(page: SophiePage) {
   const properties = Object.entries(page.properties).map(([key, value]) => `  ${key}: ${yamlValue(value)}`).join("\n");
   const frontmatter = ["---", "sophie: 1", `id: ${page.id}`, `title: ${JSON.stringify(page.title)}`, `kind: ${page.kind}`, `revision: ${page.revision}`, "properties:", properties || "  {}", "---", ""].join("\n");

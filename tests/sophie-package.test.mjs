@@ -5,6 +5,7 @@ import {
   blocksToMarkdown,
   createSophieAsset,
   createSophiePackage,
+  parseSophiePageMarkdown,
   readSophiePackage,
   readSophiePackageWithAssets,
 } from "../lib/sophie-package.ts";
@@ -34,6 +35,28 @@ test("round-trips a page and verified binary attachment", async () => {
   assert.deepEqual(restored.assets, [asset]);
   assert.equal((await readSophiePackage(packed)).title, input.title);
   assert.match(blocksToMarkdown(input), /````typescript/);
+});
+
+test("reconstructs editable blocks and properties from the Markdown truth", () => {
+  const input = page();
+  input.properties = { status: "Ready", score: 72, published: true, tags: ["Offline", "Cloud"] };
+  input.blocks = [
+    { id: "b-text", type: "text", content: "正文\n第二行" },
+    { id: "b-heading", type: "heading", content: "标题" },
+    { id: "b-todo", type: "todo", content: "完成同步", checked: true },
+    { id: "b-list", type: "bulleted-list", content: "列表" },
+    { id: "b-number", type: "numbered-list", content: "编号" },
+    { id: "b-quote", type: "quote", content: "引用" },
+    { id: "b-callout", type: "callout", content: "提示" },
+    { id: "b-toggle", type: "toggle", content: "展开" },
+    { id: "b-divider", type: "divider", content: "" },
+    { id: "b-image", type: "image", content: "图片", assetId: "asset-1" },
+    { id: "b-file", type: "file", content: "文件", assetId: "asset-2" },
+    { id: "b-page", type: "page-reference", content: "另一页" },
+    { id: "b-database", type: "database", content: "tasks" },
+    { id: "b-code", type: "code", language: "typescript", content: "const fence = ```nested```;" },
+  ];
+  assert.deepEqual(parseSophiePageMarkdown(blocksToMarkdown(input)), input);
 });
 
 test("rejects a page object changed independently of its Markdown truth", async () => {

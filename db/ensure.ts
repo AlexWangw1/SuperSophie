@@ -127,6 +127,14 @@ export function ensureSchema() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS database_property_schemas (
+      data_source_id TEXT PRIMARY KEY,
+      schema_json TEXT NOT NULL DEFAULT '{}',
+      schema_markdown TEXT NOT NULL DEFAULT '',
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS database_views (
       id TEXT PRIMARY KEY,
       data_source_id TEXT NOT NULL,

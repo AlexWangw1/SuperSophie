@@ -31,6 +31,14 @@ import {
   type SophiePage,
 } from "../lib/sophie-package";
 import { applyViewQuery, type FilterGroup, type ViewSort } from "../lib/database/query";
+import {
+  computeDatabaseProperties,
+  DATABASE_PROPERTY_TYPES,
+  defaultProductTaskPropertySchema,
+  type DatabasePropertyDefinition,
+  type DatabasePropertySchema,
+  type DatabasePropertyType,
+} from "../lib/database/properties";
 import { WorkspaceMenu } from "./auth-gate";
 
 type Section = "home" | "notes" | "database" | "agents" | "code" | "connectors";
@@ -49,6 +57,7 @@ type Task = {
   y: number;
   body?: string;
   revision?: number;
+  properties?: Record<string, unknown>;
 };
 
 const navItems: Array<{ id: Section; icon: string; label: string; hint?: string }> = [
@@ -717,9 +726,27 @@ function TaskCard({ task, onOpen }: { task: Task; onOpen?: (task: Task) => void 
   return <article className="task-card" draggable onClick={() => onOpen?.(task)}><div className="task-card-top"><span>{task.id}</span><span className={`priority ${task.priority.toLowerCase()}`}>{task.priority}</span></div><h4>{task.title}</h4><div className="task-tags">{task.tags.map((tag) => <span key={tag}>{tag}</span>)}</div><div className="task-card-footer"><span className="mini-avatar blue">{task.owner}</span><span>◷ {task.due}</span></div></article>;
 }
 
-function TableView({ tasks, onOpen, hidden = [] }: { tasks: Task[]; onOpen?: (task: Task) => void; hidden?: string[] }) {
-  const columns = ["status", "priority", "owner", "due", "progress"].filter((column) => !hidden.includes(column));
-  return <div className="data-table"><div className="table-row table-head" style={{ gridTemplateColumns: `42px minmax(250px,2fr) repeat(${columns.length}, minmax(105px,1fr))` }}><span><input type="checkbox" aria-label="全选" /></span><span>任务</span>{columns.map((column) => <span key={column}>{{ status: "状态", priority: "优先级", owner: "负责人", due: "截止日期", progress: "进度" }[column]}</span>)}</div>{tasks.map((task) => <div className="table-row" style={{ gridTemplateColumns: `42px minmax(250px,2fr) repeat(${columns.length}, minmax(105px,1fr))` }} key={task.id} onDoubleClick={() => onOpen?.(task)}><span><input type="checkbox" aria-label={`选择 ${task.title}`} /></span><button className="table-title-button" onClick={() => onOpen?.(task)}><b>{task.title}</b><small>{task.id}</small></button>{columns.map((column) => column === "status" ? <span key={column}><i className={`state ${task.status.replace(" ", "-").toLowerCase()}`}>{task.status}</i></span> : column === "priority" ? <span key={column}><i className={`priority ${task.priority.toLowerCase()}`}>{task.priority}</i></span> : column === "owner" ? <span key={column}><i className="mini-avatar blue">{task.owner}</i></span> : column === "due" ? <span key={column}>◷ {task.due}</span> : <span key={column}><i className="row-progress"><b style={{ width: `${task.progress}%` }} /></i><small>{task.progress}%</small></span>)}</div>)}</div>;
+function taskPropertyValue(task: Task, propertyId: string) {
+  const fixed: Record<string, unknown> = { status: task.status, priority: task.priority, owner: task.owner, due: task.due, tags: task.tags, progress: task.progress, day: task.day, x: task.x, y: task.y };
+  return task.properties?.[propertyId] ?? fixed[propertyId];
+}
+
+function PropertyCell({ task, property }: { task: Task; property: DatabasePropertyDefinition }) {
+  const value = taskPropertyValue(task, property.id);
+  if (property.id === "status") return <span><i className={`state ${task.status.replace(" ", "-").toLowerCase()}`}>{task.status}</i></span>;
+  if (property.id === "priority") return <span><i className={`priority ${task.priority.toLowerCase()}`}>{task.priority}</i></span>;
+  if (property.id === "owner") return <span><i className="mini-avatar blue">{task.owner}</i></span>;
+  if (property.id === "due") return <span>◷ {task.due}</span>;
+  if (property.id === "progress") return <span><i className="row-progress"><b style={{ width: `${task.progress}%` }} /></i><small>{task.progress}%</small></span>;
+  if (property.type === "checkbox") return <span>{value ? "☑" : "☐"}</span>;
+  if (property.type === "relation") return <span>{Array.isArray(value) ? `${value.length} 个页面` : "—"}</span>;
+  if (Array.isArray(value)) return <span>{value.join(" · ") || "—"}</span>;
+  return <span className={property.type === "formula" || property.type === "rollup" || property.type === "id" ? "computed-property" : ""}>{value === null || value === undefined || value === "" ? "—" : String(value)}</span>;
+}
+
+function TableView({ tasks, schema, onOpen, hidden = [] }: { tasks: Task[]; schema: DatabasePropertySchema; onOpen?: (task: Task) => void; hidden?: string[] }) {
+  const columns = schema.properties.filter((property) => property.type !== "title" && !hidden.includes(property.id)).slice(0, 10);
+  return <div className="data-table"><div className="table-row table-head" style={{ gridTemplateColumns: `42px minmax(250px,2fr) repeat(${columns.length}, minmax(105px,1fr))` }}><span><input type="checkbox" aria-label="全选" /></span><span>任务</span>{columns.map((property) => <span key={property.id}>{property.name}<small>{property.type}</small></span>)}</div>{tasks.map((task) => <div className="table-row" style={{ gridTemplateColumns: `42px minmax(250px,2fr) repeat(${columns.length}, minmax(105px,1fr))` }} key={task.id} onDoubleClick={() => onOpen?.(task)}><span><input type="checkbox" aria-label={`选择 ${task.title}`} /></span><button className="table-title-button" onClick={() => onOpen?.(task)}><b>{task.title}</b><small>{task.id}</small></button>{columns.map((property) => <PropertyCell key={property.id} task={task} property={property} />)}</div>)}</div>;
 }
 
 function BoardView({ tasks, move, onOpen }: { tasks: Task[]; move: (id: string, status: Task["status"]) => void; onOpen?: (task: Task) => void }) {
@@ -762,7 +789,90 @@ function FormView({ addTask }: { addTask: (title: string) => void }) {
   return <div className="form-view"><div className="form-intro"><span>✦</span><div><h2>提交一个产品任务</h2><p>表单响应会直接进入「产品任务」数据库。</p></div></div><label>任务名称 <b>*</b><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：完善移动端离线体验" /></label><label>任务说明<textarea placeholder="补充背景、成功标准和相关资料…" rows={4} /></label><div className="form-double"><label>优先级<select defaultValue="Medium"><option>High</option><option>Medium</option><option>Low</option></select></label><label>标签<select defaultValue="Product"><option>Product</option><option>Offline</option><option>Sync</option><option>Connector</option></select></label></div><button className="primary-button" onClick={() => { if (title.trim()) { addTask(title.trim()); setTitle(""); } }}>提交任务</button></div>;
 }
 
-function TaskPageDrawer({ task, onClose, onSave }: { task: Task; onClose: () => void; onSave: (task: Task) => Promise<void> }) {
+const fixedTaskProperties = new Set(["title", "status", "priority", "owner", "due", "tags", "progress"]);
+const derivedPropertyTypes = new Set<DatabasePropertyType>(["created-time", "created-by", "last-edited-time", "last-edited-by", "formula", "rollup", "id"]);
+
+function DynamicPropertyInput({ property, task, update }: { property: DatabasePropertyDefinition; task: Task; update: (id: string, value: unknown) => void }) {
+  const value = taskPropertyValue(task, property.id);
+  if (derivedPropertyTypes.has(property.type)) return <label className="computed-field"><span>{property.name}<small>{property.type}</small></span><output>{value === null || value === undefined || value === "" ? "—" : Array.isArray(value) ? value.join(" · ") : String(value)}</output></label>;
+  if (property.type === "button") return <label className="computed-field"><span>{property.name}<small>button</small></span><button type="button" onClick={() => { if (property.button?.action === "open-url" && property.button.url) window.open(property.button.url, "_blank", "noopener,noreferrer"); else if (property.button?.propertyId) update(property.button.propertyId, property.button.value); }}>{property.button?.label || property.name}</button></label>;
+  if (property.type === "checkbox") return <label className="checkbox-field"><span>{property.name}<small>checkbox</small></span><input type="checkbox" checked={Boolean(value)} onChange={(event) => update(property.id, event.target.checked)} /></label>;
+  if (property.type === "select" || property.type === "status") return <label>{property.name}<select value={String(value ?? "")} onChange={(event) => update(property.id, event.target.value)}><option value="">未填写</option>{property.options?.map((option) => <option key={option}>{option}</option>)}</select></label>;
+  if (["multi-select", "relation", "files"].includes(property.type)) return <label>{property.name}<input value={Array.isArray(value) ? value.join(", ") : ""} onChange={(event) => update(property.id, event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} placeholder={property.type === "relation" ? "输入页面 ID，用逗号分隔" : "用逗号分隔"} /></label>;
+  if (property.type === "number") return <label>{property.name}<input type="number" value={Number(value ?? 0)} onChange={(event) => update(property.id, Number(event.target.value))} /></label>;
+  return <label>{property.name}<input type={property.type === "email" ? "email" : property.type === "url" ? "url" : property.type === "phone" ? "tel" : "text"} value={String(value ?? "")} onChange={(event) => update(property.id, event.target.value)} /></label>;
+}
+
+function DatabaseSchemaEditor({ schema, saving, onClose, onSave }: { schema: DatabasePropertySchema; saving: boolean; onClose: () => void; onSave: (schema: DatabasePropertySchema) => Promise<void> }) {
+  const [draft, setDraft] = useState<DatabasePropertySchema>(() => structuredClone(schema));
+  const [newName, setNewName] = useState("");
+  const [newType, setNewType] = useState<DatabasePropertyType>("text");
+  const [error, setError] = useState("");
+  const updateProperty = (id: string, patch: Partial<DatabasePropertyDefinition>) => setDraft((current) => ({ ...current, properties: current.properties.map((property) => property.id === id ? { ...property, ...patch } : property) }));
+  const moveProperty = (id: string, direction: -1 | 1) => setDraft((current) => {
+    const index = current.properties.findIndex((property) => property.id === id);
+    const destination = index + direction;
+    if (index < 0 || destination < 0 || destination >= current.properties.length) return current;
+    const properties = [...current.properties];
+    [properties[index], properties[destination]] = [properties[destination], properties[index]];
+    return { ...current, properties };
+  });
+  const addProperty = () => {
+    const name = newName.trim();
+    if (!name) return;
+    const base = name.normalize("NFKD").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase() || `field_${draft.properties.length + 1}`;
+    let id = /^[A-Za-z]/.test(base) ? base : `field_${base}`;
+    let suffix = 2;
+    while (draft.properties.some((property) => property.id === id)) id = `${base}_${suffix++}`;
+    const property: DatabasePropertyDefinition = { id, name, type: newType };
+    if (["select", "multi-select", "status"].includes(newType)) property.options = newType === "status" ? ["Not started", "In progress", "Done"] : ["Option 1", "Option 2"];
+    if (newType === "formula") property.formula = "if(progress >= 100, \"Complete\", \"Active\")";
+    if (newType === "relation") property.relation = { dataSourceId: "product-tasks", twoWay: false };
+    if (newType === "rollup") property.rollup = { relationPropertyId: draft.properties.find((item) => item.type === "relation")?.id || "dependencies", targetPropertyId: "title", aggregation: "count" };
+    if (newType === "id") property.idPrefix = "ID";
+    if (newType === "button") property.button = { label: name, action: "set-property", propertyId: "status", value: "Done" };
+    setDraft((current) => ({ ...current, properties: [...current.properties, property] }));
+    setNewName("");
+  };
+  const save = async () => {
+    setError("");
+    try { await onSave(draft); onClose(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "属性 schema 保存失败"); }
+  };
+  const relationProperties = draft.properties.filter((property) => property.type === "relation");
+  const writableTargets = draft.properties.filter((property) => !derivedPropertyTypes.has(property.type) && !["title", "button"].includes(property.type));
+  return (
+    <div className="database-peek-backdrop" onMouseDown={onClose}>
+      <aside className="database-page-peek schema-editor" onMouseDown={(event) => event.stopPropagation()}>
+        <header><span>产品任务 / 属性 Schema</span><div><button onClick={() => void save()} disabled={saving}>{saving ? "保存中…" : "保存 Schema"}</button><button onClick={onClose} aria-label="关闭属性编辑器">×</button></div></header>
+        <div className="schema-editor-body">
+          <div className="schema-intro"><span>◇</span><div><h2>动态属性</h2><p>属性定义、公式和关联配置会以 Markdown + JSON 同步到所有设备。</p></div></div>
+          {draft.properties.map((property, index) => (
+            <article key={property.id}>
+              <div className="schema-property-main">
+                <span className="schema-order"><button onClick={() => moveProperty(property.id, -1)} disabled={index === 0} aria-label={`上移 ${property.name}`}>↑</button><button onClick={() => moveProperty(property.id, 1)} disabled={index === draft.properties.length - 1} aria-label={`下移 ${property.name}`}>↓</button></span>
+                <input value={property.name} onChange={(event) => updateProperty(property.id, { name: event.target.value })} aria-label={`${property.id} 名称`} />
+                <code>{property.id}</code><span>{property.type}</span>
+              </div>
+              {["select", "multi-select", "status"].includes(property.type) && <input className="schema-config-input" value={property.options?.join(", ") ?? ""} onChange={(event) => updateProperty(property.id, { options: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} placeholder="选项，用逗号分隔" />}
+              {property.type === "number" && <select className="schema-config-input" value={property.numberFormat ?? "number"} onChange={(event) => updateProperty(property.id, { numberFormat: event.target.value as DatabasePropertyDefinition["numberFormat"] })}><option value="number">数字</option><option value="percent">百分比</option><option value="currency">货币</option></select>}
+              {property.type === "formula" && <input className="schema-config-input" value={property.formula ?? ""} onChange={(event) => updateProperty(property.id, { formula: event.target.value })} placeholder={'例如 if(progress >= 100, "Complete", "Active")'} />}
+              {property.type === "relation" && <div className="schema-config-row"><input className="schema-config-input" value={property.relation?.dataSourceId ?? "product-tasks"} onChange={(event) => updateProperty(property.id, { relation: { dataSourceId: event.target.value, twoWay: property.relation?.twoWay } })} placeholder="关联数据源 ID" /><label><input type="checkbox" checked={Boolean(property.relation?.twoWay)} onChange={(event) => updateProperty(property.id, { relation: { dataSourceId: property.relation?.dataSourceId ?? "product-tasks", twoWay: event.target.checked } })} />双向关联</label></div>}
+              {property.type === "rollup" && <div className="schema-config-row three"><select value={property.rollup?.relationPropertyId ?? ""} onChange={(event) => updateProperty(property.id, { rollup: { relationPropertyId: event.target.value, targetPropertyId: property.rollup?.targetPropertyId ?? "title", aggregation: property.rollup?.aggregation ?? "count" } })}><option value="">选择关联</option>{relationProperties.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select><select value={property.rollup?.targetPropertyId ?? "title"} onChange={(event) => updateProperty(property.id, { rollup: { relationPropertyId: property.rollup?.relationPropertyId ?? "", targetPropertyId: event.target.value, aggregation: property.rollup?.aggregation ?? "count" } })}>{draft.properties.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select><select value={property.rollup?.aggregation ?? "count"} onChange={(event) => updateProperty(property.id, { rollup: { relationPropertyId: property.rollup?.relationPropertyId ?? "", targetPropertyId: property.rollup?.targetPropertyId ?? "title", aggregation: event.target.value as NonNullable<DatabasePropertyDefinition["rollup"]>["aggregation"] } })}>{["count", "count-values", "sum", "average", "min", "max", "percent-checked", "show-unique"].map((aggregation) => <option key={aggregation}>{aggregation}</option>)}</select></div>}
+              {property.type === "button" && <div className="schema-config-row three"><input value={property.button?.label ?? property.name} onChange={(event) => updateProperty(property.id, { button: { ...property.button, label: event.target.value, action: property.button?.action ?? "set-property" } })} placeholder="按钮文字" /><select value={property.button?.action ?? "set-property"} onChange={(event) => updateProperty(property.id, { button: { label: property.button?.label ?? property.name, action: event.target.value as "set-property" | "open-url" } })}><option value="set-property">设置属性</option><option value="open-url">打开链接</option></select>{property.button?.action === "open-url" ? <input value={property.button.url ?? ""} onChange={(event) => updateProperty(property.id, { button: { ...property.button!, url: event.target.value } })} placeholder="https://" /> : <span className="schema-button-target"><select value={property.button?.propertyId ?? ""} onChange={(event) => updateProperty(property.id, { button: { ...property.button!, propertyId: event.target.value } })}><option value="">目标属性</option>{writableTargets.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select><input value={String(property.button?.value ?? "")} onChange={(event) => updateProperty(property.id, { button: { ...property.button!, value: event.target.value } })} placeholder="设置值" /></span>}</div>}
+              {property.type === "id" && <input className="schema-config-input" value={property.idPrefix ?? "ID"} onChange={(event) => updateProperty(property.id, { idPrefix: event.target.value })} placeholder="ID 前缀" />}
+              {property.type !== "title" && <button className="schema-delete" onClick={() => setDraft((current) => ({ ...current, properties: current.properties.filter((item) => item.id !== property.id) }))}>删除</button>}
+            </article>
+          ))}
+          <div className="schema-add"><input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="新属性名称" /><select value={newType} onChange={(event) => setNewType(event.target.value as DatabasePropertyType)}>{DATABASE_PROPERTY_TYPES.filter((type) => type !== "title").map((type) => <option key={type} value={type}>{type}</option>)}</select><button onClick={addProperty}>添加属性</button></div>
+          {error && <p className="schema-error">{error}</p>}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function TaskPageDrawer({ task, schema, onClose, onSave }: { task: Task; schema: DatabasePropertySchema; onClose: () => void; onSave: (task: Task) => Promise<void> }) {
   const [draft, setDraft] = useState(task);
   const [saving, setSaving] = useState(false);
   const [saveState, setSaveState] = useState("所有属性与正文都会保存为 Markdown");
@@ -778,12 +888,17 @@ function TaskPageDrawer({ task, onClose, onSave }: { task: Task; onClose: () => 
     catch { setSaveState("已保留本地修改，联网后重试"); }
     finally { setSaving(false); }
   };
-  return <div className="database-peek-backdrop" onMouseDown={onClose}><aside className="database-page-peek" onMouseDown={(event) => event.stopPropagation()}><header><span>产品任务 / {draft.id}</span><div><button onClick={save} disabled={saving}>{saving ? "保存中…" : "保存"}</button><button onClick={onClose} aria-label="关闭页面">×</button></div></header><div className="peek-body"><span className="peek-icon">▦</span><input className="peek-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} aria-label="任务标题" /><div className="peek-properties"><label>状态<select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as Task["status"] })}><option>Inbox</option><option>In progress</option><option>Review</option><option>Done</option></select></label><label>优先级<select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as Task["priority"] })}><option>High</option><option>Medium</option><option>Low</option></select></label><label>负责人<input value={draft.owner} onChange={(event) => setDraft({ ...draft, owner: event.target.value })} /></label><label>截止日期<input value={draft.due} onChange={(event) => setDraft({ ...draft, due: event.target.value })} /></label><label>标签<input value={draft.tags.join(", ")} onChange={(event) => setDraft({ ...draft, tags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean) })} /></label><label>进度<span className="peek-progress"><input type="range" min="0" max="100" value={draft.progress} onChange={(event) => setDraft({ ...draft, progress: Number(event.target.value) })} /><b>{draft.progress}%</b></span></label></div><div className="peek-divider" /><label className="peek-markdown"><span>页面正文 · Markdown</span><textarea rows={12} value={draft.body ?? ""} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="记录背景、成功标准、资料和执行结果…" /></label><footer>{saveState}</footer></div></aside></div>;
+  const updateDynamic = (id: string, value: unknown) => setDraft((current) => ({ ...current, properties: { ...current.properties, [id]: value } }));
+  return <div className="database-peek-backdrop" onMouseDown={onClose}><aside className="database-page-peek" onMouseDown={(event) => event.stopPropagation()}><header><span>产品任务 / {draft.id}</span><div><button onClick={save} disabled={saving}>{saving ? "保存中…" : "保存"}</button><button onClick={onClose} aria-label="关闭页面">×</button></div></header><div className="peek-body"><span className="peek-icon">▦</span><input className="peek-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} aria-label="任务标题" /><div className="peek-properties"><label>状态<select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as Task["status"] })}><option>Inbox</option><option>In progress</option><option>Review</option><option>Done</option></select></label><label>优先级<select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as Task["priority"] })}><option>High</option><option>Medium</option><option>Low</option></select></label><label>负责人<input value={draft.owner} onChange={(event) => setDraft({ ...draft, owner: event.target.value })} /></label><label>截止日期<input value={draft.due} onChange={(event) => setDraft({ ...draft, due: event.target.value })} /></label><label>标签<input value={draft.tags.join(", ")} onChange={(event) => setDraft({ ...draft, tags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean) })} /></label><label>进度<span className="peek-progress"><input type="range" min="0" max="100" value={draft.progress} onChange={(event) => setDraft({ ...draft, progress: Number(event.target.value) })} /><b>{draft.progress}%</b></span></label>{schema.properties.filter((property) => !fixedTaskProperties.has(property.id)).map((property) => <DynamicPropertyInput key={property.id} property={property} task={draft} update={updateDynamic} />)}</div><div className="peek-divider" /><label className="peek-markdown"><span>页面正文 · Markdown</span><textarea rows={12} value={draft.body ?? ""} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="记录背景、成功标准、资料和执行结果…" /></label><footer>{saveState}</footer></div></aside></div>;
 }
 
 function DatabaseView() {
   const [view, setView] = useState<ViewType>("table");
   const [tasks, setTasks] = useState(initialTasks);
+  const [propertySchema, setPropertySchema] = useState<DatabasePropertySchema>(defaultProductTaskPropertySchema);
+  const [schemaRevision, setSchemaRevision] = useState(1);
+  const [schemaEditorOpen, setSchemaEditorOpen] = useState(false);
+  const [schemaSaving, setSchemaSaving] = useState(false);
   const [viewMenu, setViewMenu] = useState(false);
   const [toolMenu, setToolMenu] = useState<"filter" | "sort" | "group" | "properties" | undefined>();
   const [searchOpen, setSearchOpen] = useState(false);
@@ -804,11 +919,15 @@ function DatabaseView() {
       .then(async (response) => {
         if (!response.ok) throw new Error("database unavailable");
         return response.json() as Promise<{
+          source: { schema: DatabasePropertySchema; schemaRevision: number };
           views: Array<{ id: string; type: ViewType; revision: number; config: { visibleProperties?: string[]; sorts?: ViewSort[]; groupBy?: string | null; subGroupBy?: string | null; filters?: FilterGroup | null } }>;
-          records: Array<{ id: string; title: string; markdown: string; revision: number; properties: Partial<Task> }>;
+          records: Array<{ id: string; title: string; markdown: string; revision: number; properties: Record<string, unknown>; rawProperties: Record<string, unknown> }>;
         }>;
       })
       .then((payload) => {
+        const nextSchema = payload.source.schema ?? defaultProductTaskPropertySchema;
+        setPropertySchema(nextSchema);
+        setSchemaRevision(payload.source.schemaRevision ?? 1);
         const configs = Object.fromEntries(payload.views.map((item) => [item.type, item.config]));
         setRemoteViewConfigs(configs);
         viewRevisionsRef.current = Object.fromEntries(payload.views.map((item) => [item.type, item.revision]));
@@ -816,9 +935,12 @@ function DatabaseView() {
         setSorts(tableConfig.sorts ?? []);
         setGroupBy(tableConfig.groupBy ?? "");
         setSubGroupBy(tableConfig.subGroupBy ?? "");
-        setHiddenProperties(["status", "priority", "owner", "due", "progress", "tags"].filter((property) => !(tableConfig.visibleProperties ?? ["status", "priority", "owner", "due", "progress", "tags"]).includes(property)));
+        const propertyIds = nextSchema.properties.filter((property) => property.type !== "title").map((property) => property.id);
+        const defaultVisible = ["status", "priority", "owner", "due", "progress", "tags"];
+        setHiddenProperties(propertyIds.filter((property) => !(tableConfig.visibleProperties ?? defaultVisible).includes(property)));
         setTasks(payload.records.map((record) => {
           const marker = record.markdown.match(/<!-- sophie:block=.*?-->\n([\s\S]*)$/);
+          const properties = { ...record.rawProperties, ...record.properties };
           return {
             id: record.id,
             title: record.title,
@@ -833,6 +955,7 @@ function DatabaseView() {
             y: Number(record.properties.y ?? 50),
             body: marker?.[1]?.trim() ?? "",
             revision: record.revision,
+            properties,
           } as Task;
         }));
         setSyncState("synced");
@@ -848,7 +971,7 @@ function DatabaseView() {
     setGroupBy(config.groupBy ?? (next === "board" ? "status" : ""));
     setSubGroupBy(config.subGroupBy ?? "");
     const visible = config.visibleProperties ?? ["status", "priority", "owner", "due", "progress", "tags"];
-    setHiddenProperties(["status", "priority", "owner", "due", "progress", "tags"].filter((property) => !visible.includes(property)));
+    setHiddenProperties(propertySchema.properties.filter((property) => property.type !== "title").map((property) => property.id).filter((property) => !visible.includes(property)));
   };
 
   const filter = useMemo<FilterGroup | undefined>(() => {
@@ -859,14 +982,15 @@ function DatabaseView() {
   }, [priorityFilter, statusFilter]);
 
   const visibleTasks = useMemo(() => applyViewQuery(tasks.map((task) => ({ ...task, properties: {
+    ...task.properties,
     status: task.status, priority: task.priority, due: task.due, day: task.day, owner: task.owner,
     tags: task.tags, progress: task.progress, x: task.x, y: task.y,
-  } })), { search, filter, sorts }), [filter, search, sorts, tasks]);
+  } as Record<string, string | number | boolean | string[] | null | undefined> })), { search, filter, sorts }), [filter, search, sorts, tasks]);
 
   useEffect(() => {
     if (syncState === "loading") return;
     const timeout = setTimeout(() => {
-      const visibleProperties = ["status", "priority", "owner", "due", "progress", "tags"].filter((property) => !hiddenProperties.includes(property));
+      const visibleProperties = propertySchema.properties.filter((property) => property.type !== "title" && !hiddenProperties.includes(property.id)).map((property) => property.id);
       fetch("/api/database", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -886,7 +1010,7 @@ function DatabaseView() {
       }).catch(() => undefined);
     }, 500);
     return () => clearTimeout(timeout);
-  }, [filter, groupBy, hiddenProperties, sorts, subGroupBy, syncState, view]);
+  }, [filter, groupBy, hiddenProperties, propertySchema, sorts, subGroupBy, syncState, view]);
 
   const saveTask = useCallback(async (task: Task) => {
     setSyncState("saving");
@@ -897,17 +1021,42 @@ function DatabaseView() {
         id: task.id,
         title: task.title,
         body: task.body ?? "",
-        properties: { status: task.status, priority: task.priority, due: task.due, day: task.day, owner: task.owner, tags: task.tags, progress: task.progress, x: task.x, y: task.y },
+        properties: { ...task.properties, status: task.status, priority: task.priority, due: task.due, day: task.day, owner: task.owner, tags: task.tags, progress: task.progress, x: task.x, y: task.y },
         baseRevision: task.revision,
       } }),
     });
     if (!response.ok) { setSyncState("offline"); throw new Error(response.status === 409 ? "revision_conflict" : "save_failed"); }
     const payload = await response.json() as { revision: number };
-    const saved = { ...task, revision: payload.revision };
+    const raw = { ...task.properties, status: task.status, priority: task.priority, due: task.due, day: task.day, owner: task.owner, tags: task.tags, progress: task.progress, x: task.x, y: task.y };
+    const recordsById = new Map(tasks.map((item) => [item.id, { title: item.title, properties: item.properties ?? {} }]));
+    const properties = computeDatabaseProperties({ schema: propertySchema, raw, record: { id: task.id, title: task.title }, recordsById });
+    const saved = { ...task, revision: payload.revision, properties };
     setTasks((current) => current.map((item) => item.id === saved.id ? saved : item));
     setSelectedTask((current) => current?.id === saved.id ? saved : current);
     setSyncState("synced");
-  }, []);
+  }, [propertySchema, tasks]);
+
+  const savePropertySchema = useCallback(async (schema: DatabasePropertySchema) => {
+    setSchemaSaving(true);
+    try {
+      const response = await fetch("/api/database", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "save-schema", sourceId: "product-tasks", schema, baseRevision: schemaRevision }),
+      });
+      const payload = await response.json() as { error?: string; schema?: DatabasePropertySchema; revision?: number };
+      if (!response.ok || !payload.schema || !payload.revision) throw new Error(payload.error || "属性 schema 保存失败");
+      setPropertySchema(payload.schema);
+      setSchemaRevision(payload.revision);
+      const propertyIds = new Set(payload.schema.properties.map((property) => property.id));
+      setHiddenProperties((current) => current.filter((id) => propertyIds.has(id)));
+      setTasks((current) => {
+        const recordsById = new Map(current.map((item) => [item.id, { title: item.title, properties: item.properties ?? {} }]));
+        return current.map((task) => ({ ...task, properties: computeDatabaseProperties({ schema: payload.schema!, raw: task.properties ?? {}, record: { id: task.id, title: task.title }, recordsById }) }));
+      });
+      setSyncState("synced");
+    } finally { setSchemaSaving(false); }
+  }, [schemaRevision]);
 
   const move = (id: string, status: Task["status"]) => {
     const task = tasks.find((item) => item.id === id);
@@ -938,11 +1087,11 @@ function DatabaseView() {
   const filterCount = Number(statusFilter !== "All") + Number(priorityFilter !== "All");
   return (
     <main className="database-content">
-      <header className="database-title"><div><span className="database-icon">▦</span><div><h1>产品任务</h1><p>{visibleTasks.length} / {tasks.length} 条记录 · {syncState === "synced" ? "云端已同步" : syncState === "saving" ? "保存中…" : syncState === "loading" ? "正在加载数据源…" : "离线副本"}</p></div></div><div><button className="quiet-button">链接数据源</button><button className="primary-small" onClick={() => addTask("未命名任务")}>＋ 新建</button></div></header>
+      <header className="database-title"><div><span className="database-icon">▦</span><div><h1>产品任务</h1><p>{visibleTasks.length} / {tasks.length} 条记录 · {propertySchema.properties.length} 个属性 · {syncState === "synced" ? "云端已同步" : syncState === "saving" ? "保存中…" : syncState === "loading" ? "正在加载数据源…" : "离线副本"}</p></div></div><div><button className="quiet-button" onClick={() => setSchemaEditorOpen(true)}>编辑属性</button><button className="primary-small" onClick={() => addTask("未命名任务")}>＋ 新建</button></div></header>
       <div className="view-tabs"><div className="visible-tabs">{viewOptions.slice(0, 6).map((option) => <button className={view === option.id ? "active" : ""} key={option.id} onClick={() => selectView(option.id)}><span>{option.icon}</span>{option.label}</button>)}</div><div className="view-more"><button onClick={() => setViewMenu(!viewMenu)}>更多视图⌄</button>{viewMenu && <div className="view-menu">{viewOptions.slice(6).map((option) => <button key={option.id} onClick={() => { selectView(option.id); setViewMenu(false); }}><span>{option.icon}</span><div><b>{option.label}</b><small>{option.id === "form" ? "收集信息" : option.id === "map" ? "按位置展示" : "分析与组织数据"}</small></div></button>)}</div>}</div><div className="view-tools"><button className={searchOpen ? "active" : ""} onClick={() => setSearchOpen(!searchOpen)}>⌕</button><button className={toolMenu === "filter" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "filter" ? undefined : "filter")}>筛选 {filterCount > 0 && <b>{filterCount}</b>}</button><button className={toolMenu === "sort" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "sort" ? undefined : "sort")}>排序 {sorts.length > 0 && <b>{sorts.length}</b>}</button><button className={toolMenu === "group" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "group" ? undefined : "group")}>分组</button><button className={toolMenu === "properties" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "properties" ? undefined : "properties")}>属性</button></div></div>
-      {(searchOpen || toolMenu) && <div className="database-controls">{searchOpen && <label className="database-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索当前数据源…" /><button onClick={() => { setSearch(""); setSearchOpen(false); }}>×</button></label>}{toolMenu === "filter" && <div className="database-control-popover"><strong>高级筛选 · AND</strong><label>状态<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All</option><option>Inbox</option><option>In progress</option><option>Review</option><option>Done</option></select></label><label>优先级<select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}><option>All</option><option>High</option><option>Medium</option><option>Low</option></select></label><small>查询引擎支持 AND / OR 最多三层嵌套；此面板显示常用条件。</small></div>}{toolMenu === "sort" && <div className="database-control-popover"><strong>排序</strong><label>属性<select value={sorts[0]?.property ?? ""} onChange={(event) => setSorts(event.target.value ? [{ property: event.target.value, direction: sorts[0]?.direction ?? "ascending" }] : [])}><option value="">不排序</option><option value="title">标题</option><option value="status">状态</option><option value="priority">优先级</option><option value="due">截止日期</option><option value="progress">进度</option></select></label><label>方向<select value={sorts[0]?.direction ?? "ascending"} onChange={(event) => setSorts((current) => current.length ? [{ ...current[0], direction: event.target.value as ViewSort["direction"] }] : [])}><option value="ascending">升序</option><option value="descending">降序</option></select></label></div>}{toolMenu === "group" && <div className="database-control-popover"><strong>分组与子分组</strong><label>分组<select value={groupBy} onChange={(event) => setGroupBy(event.target.value)}><option value="">不分组</option><option value="status">状态</option><option value="priority">优先级</option><option value="owner">负责人</option><option value="tags">标签</option></select></label><label>子分组<select value={subGroupBy} onChange={(event) => setSubGroupBy(event.target.value)}><option value="">无</option><option value="priority">优先级</option><option value="owner">负责人</option></select></label></div>}{toolMenu === "properties" && <div className="database-control-popover property-control"><strong>属性可见性</strong>{["status", "priority", "owner", "due", "progress"].map((property) => <label key={property}><input type="checkbox" checked={!hiddenProperties.includes(property)} onChange={() => setHiddenProperties((current) => current.includes(property) ? current.filter((item) => item !== property) : [...current, property])} />{{ status: "状态", priority: "优先级", owner: "负责人", due: "截止日期", progress: "进度" }[property]}</label>)}</div>}</div>}
+      {(searchOpen || toolMenu) && <div className="database-controls">{searchOpen && <label className="database-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索当前数据源…" /><button onClick={() => { setSearch(""); setSearchOpen(false); }}>×</button></label>}{toolMenu === "filter" && <div className="database-control-popover"><strong>高级筛选 · AND</strong><label>状态<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All</option>{(propertySchema.properties.find((property) => property.id === "status")?.options ?? ["Inbox", "In progress", "Review", "Done"]).map((option) => <option key={option}>{option}</option>)}</select></label><label>优先级<select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}><option>All</option>{(propertySchema.properties.find((property) => property.id === "priority")?.options ?? ["High", "Medium", "Low"]).map((option) => <option key={option}>{option}</option>)}</select></label><small>查询引擎支持 AND / OR 最多三层嵌套；此面板显示常用条件。</small></div>}{toolMenu === "sort" && <div className="database-control-popover"><strong>排序</strong><label>属性<select value={sorts[0]?.property ?? ""} onChange={(event) => setSorts(event.target.value ? [{ property: event.target.value, direction: sorts[0]?.direction ?? "ascending" }] : [])}><option value="">不排序</option>{propertySchema.properties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label><label>方向<select value={sorts[0]?.direction ?? "ascending"} onChange={(event) => setSorts((current) => current.length ? [{ ...current[0], direction: event.target.value as ViewSort["direction"] }] : [])}><option value="ascending">升序</option><option value="descending">降序</option></select></label></div>}{toolMenu === "group" && <div className="database-control-popover"><strong>分组与子分组</strong><label>分组<select value={groupBy} onChange={(event) => setGroupBy(event.target.value)}><option value="">不分组</option>{propertySchema.properties.filter((property) => property.type !== "title").map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label><label>子分组<select value={subGroupBy} onChange={(event) => setSubGroupBy(event.target.value)}><option value="">无</option>{propertySchema.properties.filter((property) => property.type !== "title" && property.id !== groupBy).map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label></div>}{toolMenu === "properties" && <div className="database-control-popover property-control"><strong>属性可见性</strong>{propertySchema.properties.filter((property) => property.type !== "title").map((property) => <label key={property.id}><input type="checkbox" checked={!hiddenProperties.includes(property.id)} onChange={() => setHiddenProperties((current) => current.includes(property.id) ? current.filter((item) => item !== property.id) : [...current, property.id])} /><span>{property.name}<small>{property.type}</small></span></label>)}<button className="schema-manage-button" onClick={() => { setToolMenu(undefined); setSchemaEditorOpen(true); }}>管理属性 Schema</button></div>}</div>}
       <section className={`view-canvas view-${view}`}>
-        {view === "table" && <div className="grouped-database">{[...groupedTasks].map(([name, group]) => <section key={name || "all"}>{name && <header><strong>{name}</strong><span>{group.length}</span>{subGroupBy && <small>子分组：{subGroupBy}</small>}</header>}<TableView tasks={group} onOpen={setSelectedTask} hidden={hiddenProperties} /></section>)}</div>}
+        {view === "table" && <div className="grouped-database">{[...groupedTasks].map(([name, group]) => <section key={name || "all"}>{name && <header><strong>{name}</strong><span>{group.length}</span>{subGroupBy && <small>子分组：{propertySchema.properties.find((property) => property.id === subGroupBy)?.name ?? subGroupBy}</small>}</header>}<TableView tasks={group} schema={propertySchema} onOpen={setSelectedTask} hidden={hiddenProperties} /></section>)}</div>}
         {view === "board" && <BoardView tasks={visibleTasks} move={move} onOpen={setSelectedTask} />}
         {view === "timeline" && <TimelineView tasks={visibleTasks} />}
         {view === "calendar" && <CalendarView tasks={visibleTasks} />}
@@ -954,7 +1103,8 @@ function DatabaseView() {
         {view === "dashboard" && <DashboardView tasks={visibleTasks} />}
         {view === "form" && <FormView addTask={addTask} />}
       </section>
-      {selectedTask && <TaskPageDrawer key={selectedTask.id} task={selectedTask} onClose={() => setSelectedTask(undefined)} onSave={saveTask} />}
+      {selectedTask && <TaskPageDrawer key={selectedTask.id} task={selectedTask} schema={propertySchema} onClose={() => setSelectedTask(undefined)} onSave={saveTask} />}
+      {schemaEditorOpen && <DatabaseSchemaEditor key={schemaRevision} schema={propertySchema} saving={schemaSaving} onClose={() => setSchemaEditorOpen(false)} onSave={savePropertySchema} />}
     </main>
   );
 }

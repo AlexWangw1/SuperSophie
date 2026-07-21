@@ -109,9 +109,10 @@ function rowMarkdown(title: unknown, properties: Array<[string, unknown]>) {
 }
 
 export async function buildWorkspaceSnapshotMarkdown(db: D1Database, workspaceId: string) {
-  const [documents, sources, views, records, codeProjects, codeFiles, runs, events, conversations, messages, outbox, outboxDetails, attempts, assets, tombstones] = await Promise.all([
+  const [documents, sources, propertySchemas, views, records, codeProjects, codeFiles, runs, events, conversations, messages, outbox, outboxDetails, attempts, assets, tombstones] = await Promise.all([
     db.prepare(`SELECT * FROM documents WHERE workspace_id = ? ORDER BY updated_at`).bind(workspaceId).all<SnapshotRow>(),
     db.prepare(`SELECT * FROM data_sources WHERE workspace_id = ? ORDER BY updated_at`).bind(workspaceId).all<SnapshotRow>(),
+    db.prepare(`SELECT p.* FROM database_property_schemas p JOIN data_sources s ON s.id = p.data_source_id WHERE s.workspace_id = ? ORDER BY p.updated_at`).bind(workspaceId).all<SnapshotRow>(),
     db.prepare(`SELECT v.* FROM database_views v JOIN data_sources s ON s.id = v.data_source_id WHERE s.workspace_id = ? ORDER BY v.updated_at`).bind(workspaceId).all<SnapshotRow>(),
     db.prepare(`SELECT r.* FROM database_records r JOIN data_sources s ON s.id = r.data_source_id WHERE s.workspace_id = ? ORDER BY r.updated_at`).bind(workspaceId).all<SnapshotRow>(),
     db.prepare(`SELECT * FROM code_projects WHERE workspace_id = ? ORDER BY updated_at`).bind(workspaceId).all<SnapshotRow>(),
@@ -130,6 +131,7 @@ export async function buildWorkspaceSnapshotMarkdown(db: D1Database, workspaceId
   const sections = [
     ["页面", documents.results.map((row) => snapshotEntry("document", row, row.markdown))],
     ["数据源", sources.results.map((row) => snapshotEntry("data-source", row, row.schema_markdown))],
+    ["数据库属性", propertySchemas.results.map((row) => snapshotEntry("database-property-schema", { ...row, id: row.data_source_id }, row.schema_markdown))],
     ["数据库视图", views.results.map((row) => snapshotEntry("database-view", row, row.config_markdown))],
     ["数据库记录", records.results.map((row) => snapshotEntry("database-record", row, row.markdown))],
     ["代码项目", codeProjects.results.map((row) => snapshotEntry("code-project", row, rowMarkdown(row.name, [["updatedAt", row.updated_at]])))],

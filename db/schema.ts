@@ -118,6 +118,15 @@ export const dataSources = sqliteTable("data_sources", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const databasePropertySchemas = sqliteTable("database_property_schemas", {
+  dataSourceId: text("data_source_id").primaryKey(),
+  schemaJson: text("schema_json").notNull().default("{}"),
+  schemaMarkdown: text("schema_markdown").notNull().default(""),
+  revision: integer("revision").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const databaseViews = sqliteTable("database_views", {
   id: text("id").primaryKey(),
   dataSourceId: text("data_source_id").notNull(),

@@ -11,14 +11,14 @@ SuperSophie 把数据库拆成四个层次：
 
 - Table、Board、Timeline、Calendar、List、Gallery、Chart、Form、Map、Feed、Dashboard 共 11 种布局。
 - 同一数据源在各视图间共享记录，但每个视图独立保存配置。
-- 搜索、属性显隐、多个排序定义、分组和子分组。
+- 搜索、属性显隐、可调整优先级的多重排序，以及真实分组/子分组。
 - 23 种动态属性：标题、文本、数字、选择、多选、状态、日期、人员、文件、复选框、URL、邮箱、电话、创建/编辑时间与人员、公式、关联、汇总、按钮、唯一 ID 和位置。
 - 属性编辑器支持新增、删除、重排和类型专属配置；schema 使用 revision 乐观并发并进入 OneDrive 工作区快照。
 - 公式使用无 `eval` 的受限解析器，提供算术、比较、布尔运算以及 `prop`、`if`、`empty`、`length`、`contains`、`lower`、`upper`、`round`、`min`、`max`。
 - 同一数据源内 Relation/Rollup 可计算 count、count-values、sum、average、min、max、percent-checked 和 show-unique；按钮可安全设置属性或打开 HTTP(S) 链接。
-- `AND` / `OR` 筛选树，求值器限制为最多三层嵌套。
+- 可视化 `AND` / `OR` 筛选树支持所有动态属性，界面和服务端都限制为最多三层嵌套。
 - 每条记录可在 side peek 中编辑属性和 Markdown 正文。
-- Board 拖拽更改状态；Form 创建记录。
+- Board 按所选动态属性分列并支持子分组与拖拽；Timeline/Calendar 读取日期属性，Map 读取位置坐标，Chart/Dashboard 读取分组与数字属性，Form 自动生成动态属性字段。
 - D1 乐观并发 revision；API 对冲突返回 `409 revision_conflict`。
 - 删除记录不会触发演示数据重新生成；初始记录只在首次创建默认数据源时写入。
 

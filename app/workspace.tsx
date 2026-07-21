@@ -31,7 +31,7 @@ import {
   type SophiePackageAsset,
   type SophiePage,
 } from "../lib/sophie-package";
-import { applyViewQuery, type FilterGroup, type ViewSort } from "../lib/database/query";
+import { applyViewQuery, type FilterCondition, type FilterGroup, type ViewSort } from "../lib/database/query";
 import {
   computeDatabaseProperties,
   DATABASE_PROPERTY_TYPES,
@@ -917,6 +917,17 @@ function taskPropertyValue(task: Task, propertyId: string) {
   return task.properties?.[propertyId] ?? fixed[propertyId];
 }
 
+function groupTasksByProperty(tasks: Task[], propertyId?: string) {
+  if (!propertyId) return new Map<string, Task[]>([["", tasks]]);
+  const groups = new Map<string, Task[]>();
+  for (const task of tasks) {
+    const value = taskPropertyValue(task, propertyId);
+    const keys = Array.isArray(value) ? (value.length ? value.map(String) : ["未填写"]) : [String(value ?? "未填写") || "未填写"];
+    for (const key of keys) groups.set(key, [...(groups.get(key) ?? []), task]);
+  }
+  return groups;
+}
+
 function PropertyCell({ task, property }: { task: Task; property: DatabasePropertyDefinition }) {
   const value = taskPropertyValue(task, property.id);
   if (property.id === "status") return <span><i className={`state ${task.status.replace(" ", "-").toLowerCase()}`}>{task.status}</i></span>;
@@ -935,44 +946,122 @@ function TableView({ tasks, schema, onOpen, hidden = [] }: { tasks: Task[]; sche
   return <div className="data-table"><div className="table-row table-head" style={{ gridTemplateColumns: `42px minmax(250px,2fr) repeat(${columns.length}, minmax(105px,1fr))` }}><span><input type="checkbox" aria-label="全选" /></span><span>任务</span>{columns.map((property) => <span key={property.id}>{property.name}<small>{property.type}</small></span>)}</div>{tasks.map((task) => <div className="table-row" style={{ gridTemplateColumns: `42px minmax(250px,2fr) repeat(${columns.length}, minmax(105px,1fr))` }} key={task.id} onDoubleClick={() => onOpen?.(task)}><span><input type="checkbox" aria-label={`选择 ${task.title}`} /></span><button className="table-title-button" onClick={() => onOpen?.(task)}><b>{task.title}</b><small>{task.id}</small></button>{columns.map((property) => <PropertyCell key={property.id} task={task} property={property} />)}</div>)}</div>;
 }
 
-function BoardView({ tasks, move, onOpen }: { tasks: Task[]; move: (id: string, status: Task["status"]) => void; onOpen?: (task: Task) => void }) {
-  const statuses: Task["status"][] = ["Inbox", "In progress", "Review", "Done"];
-  return <div className="board-view">{statuses.map((status) => <section className="board-column" key={status} onDragOver={(event) => event.preventDefault()} onDrop={(event) => move(event.dataTransfer.getData("task"), status)}><header><span className={`status-chip ${status.replace(" ", "-").toLowerCase()}`}>{status}</span><b>{tasks.filter((task) => task.status === status).length}</b><button>＋</button></header>{tasks.filter((task) => task.status === status).map((task) => <div key={task.id} draggable onDragStart={(event) => event.dataTransfer.setData("task", task.id)}><TaskCard task={task} onOpen={onOpen} /></div>)}<button className="column-add">＋ 新建</button></section>)}</div>;
+function BoardView({ tasks, property, subGroupProperty, move, onOpen }: { tasks: Task[]; property?: DatabasePropertyDefinition; subGroupProperty?: DatabasePropertyDefinition; move: (id: string, propertyId: string, value: unknown) => void; onOpen?: (task: Task) => void }) {
+  const descriptors = new Map<string, { label: string; value: unknown }>();
+  if (property?.type === "checkbox") {
+    descriptors.set("true", { label: "已勾选", value: true });
+    descriptors.set("false", { label: "未勾选", value: false });
+  } else {
+    for (const option of property?.options ?? []) descriptors.set(option, { label: option, value: option });
+    for (const task of tasks) {
+      const value = property ? taskPropertyValue(task, property.id) : "全部记录";
+      for (const item of Array.isArray(value) ? value : [value]) {
+        const key = item === null || item === undefined || item === "" ? "__empty__" : String(item);
+        descriptors.set(key, { label: key === "__empty__" ? "未填写" : key, value: key === "__empty__" ? null : item });
+      }
+    }
+  }
+  if (!descriptors.size) descriptors.set("__empty__", { label: "未填写", value: null });
+  const belongsTo = (task: Task, key: string) => {
+    if (!property) return true;
+    const value = taskPropertyValue(task, property.id);
+    if (property.type === "checkbox") return String(Boolean(value)) === key;
+    if (Array.isArray(value)) return value.map(String).includes(key);
+    return (value === null || value === undefined || value === "" ? "__empty__" : String(value)) === key;
+  };
+  const renderColumns = (records: Task[], prefix: string) => <div className="board-view">{[...descriptors].map(([key, descriptor]) => { const columnRecords = records.filter((task) => belongsTo(task, key)); return <section className="board-column" key={`${prefix}-${key}`} onDragOver={(event) => property && event.preventDefault()} onDrop={(event) => property && move(event.dataTransfer.getData("task"), property.id, descriptor.value)}><header><span className={`status-chip ${key.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}>{descriptor.label}</span><b>{columnRecords.length}</b><button>＋</button></header>{columnRecords.map((task) => <div key={task.id} draggable={Boolean(property)} onDragStart={(event) => event.dataTransfer.setData("task", task.id)}><TaskCard task={task} onOpen={onOpen} /></div>)}<button className="column-add">＋ 新建</button></section>; })}</div>;
+  if (!subGroupProperty) return renderColumns(tasks, "all");
+  return <div className="board-swimlanes">{[...groupTasksByProperty(tasks, subGroupProperty.id)].map(([name, records]) => <section key={name}><header><strong>{name}</strong><span>{records.length}</span><small>{subGroupProperty.name}</small></header>{renderColumns(records, name)}</section>)}</div>;
 }
 
-function TimelineView({ tasks }: { tasks: Task[] }) {
-  return <div className="timeline-view"><div className="timeline-header"><b>任务</b>{[17,18,19,20,21,22,23,24].map((day) => <span key={day}>{day}<small>JUL</small></span>)}</div>{tasks.map((task, index) => <div className="timeline-row" key={task.id}><strong>{task.title}</strong><div className="timeline-grid">{[17,18,19,20,21,22,23,24].map((day) => <i key={day} />)}<span className={`timeline-bar bar-${index % 4}`} style={{ left: `${Math.max(0, task.day - 17) * 12.5}%`, width: `${Math.max(18, task.progress / 3)}%` }}>{task.owner} · {task.progress}%</span></div></div>)}</div>;
+function parseDatabaseDate(value: unknown, fallbackYear: number) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  const text = String(value ?? "").trim();
+  const chinese = text.match(/^(\d{1,2})月(\d{1,2})日$/);
+  if (chinese) return new Date(fallbackYear, Number(chinese[1]) - 1, Number(chinese[2]));
+  const timestamp = Date.parse(text);
+  return Number.isNaN(timestamp) ? undefined : new Date(timestamp);
 }
 
-function CalendarView({ tasks }: { tasks: Task[] }) {
-  const days = Array.from({ length: 35 }, (_, index) => index + 1);
-  return <div className="calendar-view"><div className="calendar-week">{["一", "二", "三", "四", "五", "六", "日"].map((day) => <span key={day}>周{day}</span>)}</div><div className="calendar-grid">{days.map((day) => <div className={day === 17 ? "today" : day > 31 ? "other" : ""} key={day}><b>{day > 31 ? day - 31 : day}</b>{tasks.filter((task) => task.day === day).map((task) => <span className={`calendar-task ${task.priority.toLowerCase()}`} key={task.id}>{task.title}</span>)}</div>)}</div></div>;
+function dayKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function TimelineView({ tasks, dateProperty }: { tasks: Task[]; dateProperty?: DatabasePropertyDefinition }) {
+  const [fallbackDate] = useState(() => new Date());
+  const dated = tasks.map((task) => ({ task, date: parseDatabaseDate(dateProperty ? taskPropertyValue(task, dateProperty.id) : task.due, fallbackDate.getFullYear()) }));
+  const first = dated.map((item) => item.date?.getTime()).filter((item): item is number => item !== undefined).sort((left, right) => left - right)[0];
+  const start = new Date(first ?? fallbackDate.getTime());
+  start.setHours(0, 0, 0, 0);
+  const days = Array.from({ length: 8 }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return date; });
+  return <div className="timeline-view"><div className="timeline-header"><b>{dateProperty?.name ?? "日期"}</b>{days.map((date) => <span key={dayKey(date)}>{date.getDate()}<small>{date.toLocaleDateString("zh-CN", { month: "short" })}</small></span>)}</div>{dated.map(({ task, date }, index) => { const offset = date ? Math.round((date.getTime() - start.getTime()) / 86_400_000) : 0; return <div className="timeline-row" key={task.id}><strong>{task.title}</strong><div className="timeline-grid">{days.map((day) => <i key={dayKey(day)} />)}<span className={`timeline-bar bar-${index % 4}`} style={{ left: `${Math.max(0, Math.min(7, offset)) * 12.5}%`, width: `${Math.max(18, task.progress / 3)}%` }}>{task.owner} · {date ? date.toLocaleDateString("zh-CN") : "未填写日期"}</span></div></div>; })}</div>;
+}
+
+function CalendarView({ tasks, dateProperty, onOpen }: { tasks: Task[]; dateProperty?: DatabasePropertyDefinition; onOpen?: (task: Task) => void }) {
+  const [fallbackDate] = useState(() => new Date());
+  const dated = tasks.map((task) => ({ task, date: parseDatabaseDate(dateProperty ? taskPropertyValue(task, dateProperty.id) : task.due, fallbackDate.getFullYear()) }));
+  const anchor = dated.find((item) => item.date)?.date ?? fallbackDate;
+  const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const gridStart = new Date(monthStart);
+  gridStart.setDate(1 - ((monthStart.getDay() + 6) % 7));
+  const days = Array.from({ length: 42 }, (_, index) => { const date = new Date(gridStart); date.setDate(gridStart.getDate() + index); return date; });
+  const today = dayKey(fallbackDate);
+  return <div className="calendar-view"><header className="calendar-title"><strong>{anchor.toLocaleDateString("zh-CN", { year: "numeric", month: "long" })}</strong><span>{dateProperty?.name ?? "日期"}</span></header><div className="calendar-week">{["一", "二", "三", "四", "五", "六", "日"].map((day) => <span key={day}>周{day}</span>)}</div><div className="calendar-grid">{days.map((date) => <div className={`${dayKey(date) === today ? "today" : ""} ${date.getMonth() !== anchor.getMonth() ? "other" : ""}`} key={dayKey(date)}><b>{date.getDate()}</b>{dated.filter((item) => item.date && dayKey(item.date) === dayKey(date)).map(({ task }) => <button className={`calendar-task ${task.priority.toLowerCase()}`} key={task.id} onClick={() => onOpen?.(task)}>{task.title}</button>)}</div>)}</div></div>;
 }
 
 function GalleryView({ tasks, onOpen }: { tasks: Task[]; onOpen?: (task: Task) => void }) {
   return <div className="gallery-view">{tasks.map((task, index) => <article key={task.id} onClick={() => onOpen?.(task)}><div className={`gallery-cover cover-${index % 4}`}><span>{task.tags[0]}</span><i>{index % 2 ? "◫" : "✦"}</i></div><div><small>{task.id}</small><h3>{task.title}</h3><span className={`status-chip ${task.status.replace(" ", "-").toLowerCase()}`}>{task.status}</span><footer><span className="mini-avatar blue">{task.owner}</span><span>{task.due}</span></footer></div></article>)}</div>;
 }
 
-function ChartView({ tasks }: { tasks: Task[] }) {
-  const groups = ["Inbox", "In progress", "Review", "Done"] as const;
-  return <div className="chart-view"><section className="chart-card"><header><div><small>按状态</small><h3>任务分布</h3></div><button>本月⌄</button></header><div className="bar-chart">{groups.map((group) => { const count = tasks.filter((task) => task.status === group).length; return <div key={group}><span style={{ height: `${26 + count * 42}px` }}><i>{count}</i></span><small>{group}</small></div>; })}</div></section><section className="chart-card donut-card"><header><div><small>总体完成度</small><h3>发布进度</h3></div></header><div className="donut"><span><strong>64%</strong><small>已完成</small></span></div><div className="legend"><span><i className="violet-bg" />已完成 64%</span><span><i className="soft-bg" />剩余 36%</span></div></section></div>;
+function ChartView({ tasks, groupProperty, numberProperty }: { tasks: Task[]; groupProperty?: DatabasePropertyDefinition; numberProperty?: DatabasePropertyDefinition }) {
+  const counts = new Map<string, number>();
+  for (const task of tasks) {
+    const raw = groupProperty ? taskPropertyValue(task, groupProperty.id) : task.status;
+    const values = Array.isArray(raw) ? (raw.length ? raw : ["未填写"]) : [String(raw ?? "未填写")];
+    for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  const groups = [...new Set([...(groupProperty?.options ?? []), ...counts.keys()])].slice(0, 10);
+  const numbers = tasks.map((task) => Number(numberProperty ? taskPropertyValue(task, numberProperty.id) : task.progress)).filter(Number.isFinite);
+  const average = numbers.length ? Math.round(numbers.reduce((sum, value) => sum + value, 0) / numbers.length) : 0;
+  const percent = Math.max(0, Math.min(100, average));
+  return <div className="chart-view"><section className="chart-card"><header><div><small>按{groupProperty?.name ?? "状态"}</small><h3>记录分布</h3></div><button>{tasks.length} 条⌄</button></header><div className="bar-chart">{groups.map((group) => { const count = counts.get(group) ?? 0; return <div key={group}><span style={{ height: `${26 + count * 42}px` }}><i>{count}</i></span><small>{group}</small></div>; })}</div></section><section className="chart-card donut-card"><header><div><small>{numberProperty?.name ?? "总体完成度"}</small><h3>数值平均值</h3></div></header><div className="donut" style={{ background: `conic-gradient(var(--violet) ${percent}%, var(--panel-soft) 0)` }}><span><strong>{average}</strong><small>平均值</small></span></div><div className="legend"><span><i className="violet-bg" />{numberProperty?.name ?? "进度"} {average}</span><span><i className="soft-bg" />{numbers.length} 个数值</span></div></section></div>;
 }
 
-function MapView({ tasks }: { tasks: Task[] }) {
-  return <div className="map-view"><div className="map-grid" />{tasks.map((task, index) => <button className={`map-pin pin-${index % 4}`} style={{ left: `${task.x}%`, top: `${task.y}%` }} key={task.id}><span>{task.owner}</span><b>{task.title}</b></button>)}<div className="map-legend">团队协作位置 · 演示数据</div></div>;
+function mapPosition(task: Task, property?: DatabasePropertyDefinition) {
+  const value = property ? taskPropertyValue(task, property.id) : undefined;
+  const coordinates = String(value ?? "").match(/^\s*(-?\d+(?:\.\d+)?)\s*[,，]\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!coordinates) return { x: task.x, y: task.y, label: String(value ?? "未填写坐标") };
+  const first = Number(coordinates[1]);
+  const second = Number(coordinates[2]);
+  if (first >= 0 && first <= 100 && second >= 0 && second <= 100) return { x: first, y: second, label: `${first}, ${second}` };
+  return { x: Math.max(3, Math.min(97, (second + 180) / 360 * 100)), y: Math.max(4, Math.min(94, (90 - first) / 180 * 100)), label: `${first}, ${second}` };
+}
+
+function MapView({ tasks, placeProperty, onOpen }: { tasks: Task[]; placeProperty?: DatabasePropertyDefinition; onOpen?: (task: Task) => void }) {
+  return <div className="map-view"><div className="map-grid" />{tasks.map((task, index) => { const position = mapPosition(task, placeProperty); return <button className={`map-pin pin-${index % 4}`} style={{ left: `${position.x}%`, top: `${position.y}%` }} key={task.id} onClick={() => onOpen?.(task)} title={position.label}><span>{task.owner}</span><b>{task.title}</b></button>; })}<div className="map-legend">{placeProperty?.name ?? "位置"} · 支持“纬度, 经度”或画布百分比坐标</div></div>;
 }
 
 function FeedView({ tasks }: { tasks: Task[] }) {
   return <div className="feed-view">{tasks.map((task, index) => <article key={task.id}><span className={`feed-avatar tone-${index % 4}`}>{task.owner}</span><div><p><strong>{task.owner}</strong> {index % 2 ? "更新了" : "创建了"} <b>{task.title}</b></p><small>{index * 13 + 4} 分钟前 · {task.id}</small><div className="feed-change"><span className={`status-chip ${task.status.replace(" ", "-").toLowerCase()}`}>{task.status}</span><i>→</i><span>{task.progress}% 完成</span></div></div><button>•••</button></article>)}</div>;
 }
 
-function DashboardView({ tasks }: { tasks: Task[] }) {
-  return <div className="dashboard-view"><div className="metric-card"><small>全部任务</small><strong>{tasks.length}</strong><span className="positive">↑ 12% 本周</span></div><div className="metric-card"><small>进行中</small><strong>{tasks.filter((task) => task.status === "In progress").length}</strong><span>2 个临近截止</span></div><div className="metric-card"><small>平均进度</small><strong>{Math.round(tasks.reduce((sum, task) => sum + task.progress, 0) / tasks.length)}%</strong><span className="positive">↑ 8%</span></div><div className="metric-card"><small>高优先级</small><strong>{tasks.filter((task) => task.priority === "High").length}</strong><span>需要关注</span></div><div className="dashboard-wide"><ChartView tasks={tasks} /></div></div>;
+function DashboardView({ tasks, schema }: { tasks: Task[]; schema: DatabasePropertySchema }) {
+  const groupProperty = schema.properties.find((property) => ["status", "select", "multi-select"].includes(property.type));
+  const numberProperty = schema.properties.find((property) => property.type === "number");
+  const firstGroup = groupProperty?.options?.[0];
+  const groupedCount = firstGroup ? tasks.filter((task) => { const value = taskPropertyValue(task, groupProperty.id); return Array.isArray(value) ? value.includes(firstGroup) : value === firstGroup; }).length : 0;
+  const numbers = tasks.map((task) => Number(numberProperty ? taskPropertyValue(task, numberProperty.id) : 0)).filter(Number.isFinite);
+  const average = numbers.length ? Math.round(numbers.reduce((sum, value) => sum + value, 0) / numbers.length) : 0;
+  const filled = groupProperty ? tasks.filter((task) => { const value = taskPropertyValue(task, groupProperty.id); return value !== null && value !== undefined && value !== ""; }).length : 0;
+  return <div className="dashboard-view"><div className="metric-card"><small>全部记录</small><strong>{tasks.length}</strong><span className="positive">当前视图</span></div><div className="metric-card"><small>{firstGroup ?? groupProperty?.name ?? "已分组"}</small><strong>{groupedCount}</strong><span>{groupProperty?.name ?? "无分组属性"}</span></div><div className="metric-card"><small>{numberProperty?.name ?? "数值"}平均</small><strong>{average}</strong><span className="positive">{numbers.length} 个数值</span></div><div className="metric-card"><small>{groupProperty?.name ?? "属性"}已填写</small><strong>{filled}</strong><span>{tasks.length - filled} 条未填写</span></div><div className="dashboard-wide"><ChartView tasks={tasks} groupProperty={groupProperty} numberProperty={numberProperty} /></div></div>;
 }
 
-function FormView({ addTask }: { addTask: (title: string) => void }) {
+function FormView({ schema, addTask }: { schema: DatabasePropertySchema; addTask: (title: string, properties?: Record<string, unknown>) => void }) {
   const [title, setTitle] = useState("");
-  return <div className="form-view"><div className="form-intro"><span>✦</span><div><h2>提交一个产品任务</h2><p>表单响应会直接进入「产品任务」数据库。</p></div></div><label>任务名称 <b>*</b><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：完善移动端离线体验" /></label><label>任务说明<textarea placeholder="补充背景、成功标准和相关资料…" rows={4} /></label><div className="form-double"><label>优先级<select defaultValue="Medium"><option>High</option><option>Medium</option><option>Low</option></select></label><label>标签<select defaultValue="Product"><option>Product</option><option>Offline</option><option>Sync</option><option>Connector</option></select></label></div><button className="primary-button" onClick={() => { if (title.trim()) { addTask(title.trim()); setTitle(""); } }}>提交任务</button></div>;
+  const [properties, setProperties] = useState<Record<string, unknown>>({});
+  const formTask: Task = { id: "form-draft", title, status: "Inbox", priority: "Medium", due: "", day: 1, owner: "", tags: [], progress: 0, x: 50, y: 50, properties };
+  const fields = schema.properties.filter((property) => property.type !== "title" && !derivedPropertyTypes.has(property.type) && property.type !== "button");
+  return <div className="form-view"><div className="form-intro"><span>✦</span><div><h2>提交一条数据库记录</h2><p>表单字段来自当前动态属性 Schema，响应会直接进入同一数据源。</p></div></div><label>{schema.properties.find((property) => property.type === "title")?.name ?? "标题"} <b>*</b><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="输入记录标题" /></label><div className="dynamic-form-fields">{fields.map((property) => <DynamicPropertyInput key={property.id} property={property} task={formTask} update={(id, value) => setProperties((current) => ({ ...current, [id]: value }))} />)}</div><button className="primary-button" onClick={() => { if (title.trim()) { addTask(title.trim(), properties); setTitle(""); setProperties({}); } }}>提交记录</button></div>;
 }
 
 const fixedTaskProperties = new Set(["title", "status", "priority", "owner", "due", "tags", "progress"]);
@@ -986,7 +1075,7 @@ function DynamicPropertyInput({ property, task, update }: { property: DatabasePr
   if (property.type === "select" || property.type === "status") return <label>{property.name}<select value={String(value ?? "")} onChange={(event) => update(property.id, event.target.value)}><option value="">未填写</option>{property.options?.map((option) => <option key={option}>{option}</option>)}</select></label>;
   if (["multi-select", "relation", "files"].includes(property.type)) return <label>{property.name}<input value={Array.isArray(value) ? value.join(", ") : ""} onChange={(event) => update(property.id, event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} placeholder={property.type === "relation" ? "输入页面 ID，用逗号分隔" : "用逗号分隔"} /></label>;
   if (property.type === "number") return <label>{property.name}<input type="number" value={Number(value ?? 0)} onChange={(event) => update(property.id, Number(event.target.value))} /></label>;
-  return <label>{property.name}<input type={property.type === "email" ? "email" : property.type === "url" ? "url" : property.type === "phone" ? "tel" : "text"} value={String(value ?? "")} onChange={(event) => update(property.id, event.target.value)} /></label>;
+  return <label>{property.name}<input type={property.type === "email" ? "email" : property.type === "url" ? "url" : property.type === "phone" ? "tel" : property.type === "date" ? "date" : "text"} value={String(value ?? "")} onChange={(event) => update(property.id, event.target.value)} placeholder={property.type === "place" ? "纬度, 经度或画布百分比坐标" : undefined} /></label>;
 }
 
 function DatabaseSchemaEditor({ schema, saving, onClose, onSave }: { schema: DatabasePropertySchema; saving: boolean; onClose: () => void; onSave: (schema: DatabasePropertySchema) => Promise<void> }) {
@@ -1078,6 +1167,64 @@ function TaskPageDrawer({ task, schema, onClose, onSave }: { task: Task; schema:
   return <div className="database-peek-backdrop" onMouseDown={onClose}><aside className="database-page-peek" onMouseDown={(event) => event.stopPropagation()}><header><span>产品任务 / {draft.id}</span><div><button onClick={save} disabled={saving}>{saving ? "保存中…" : "保存"}</button><button onClick={onClose} aria-label="关闭页面">×</button></div></header><div className="peek-body"><span className="peek-icon">▦</span><input className="peek-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} aria-label="任务标题" /><div className="peek-properties"><label>状态<select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as Task["status"] })}><option>Inbox</option><option>In progress</option><option>Review</option><option>Done</option></select></label><label>优先级<select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as Task["priority"] })}><option>High</option><option>Medium</option><option>Low</option></select></label><label>负责人<input value={draft.owner} onChange={(event) => setDraft({ ...draft, owner: event.target.value })} /></label><label>截止日期<input value={draft.due} onChange={(event) => setDraft({ ...draft, due: event.target.value })} /></label><label>标签<input value={draft.tags.join(", ")} onChange={(event) => setDraft({ ...draft, tags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean) })} /></label><label>进度<span className="peek-progress"><input type="range" min="0" max="100" value={draft.progress} onChange={(event) => setDraft({ ...draft, progress: Number(event.target.value) })} /><b>{draft.progress}%</b></span></label>{schema.properties.filter((property) => !fixedTaskProperties.has(property.id)).map((property) => <DynamicPropertyInput key={property.id} property={property} task={draft} update={updateDynamic} />)}</div><div className="peek-divider" /><label className="peek-markdown"><span>页面正文 · Markdown</span><textarea rows={12} value={draft.body ?? ""} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="记录背景、成功标准、资料和执行结果…" /></label><footer>{saveState}</footer></div></aside></div>;
 }
 
+const filterOperatorLabels: Record<FilterCondition["operator"], string> = {
+  equals: "等于", not_equals: "不等于", contains: "包含", not_contains: "不包含",
+  starts_with: "开头是", ends_with: "结尾是", greater_than: "大于", less_than: "小于",
+  on_or_after: "不早于", on_or_before: "不晚于", is_empty: "为空", is_not_empty: "不为空",
+};
+
+function filterOperators(property?: DatabasePropertyDefinition): FilterCondition["operator"][] {
+  if (!property) return ["contains", "not_contains", "is_empty", "is_not_empty"];
+  if (property.type === "number") return ["equals", "not_equals", "greater_than", "less_than", "is_empty", "is_not_empty"];
+  if (["formula", "rollup"].includes(property.type)) return ["equals", "not_equals", "contains", "not_contains", "greater_than", "less_than", "is_empty", "is_not_empty"];
+  if (["date", "created-time", "last-edited-time"].includes(property.type)) return ["equals", "not_equals", "on_or_after", "on_or_before", "is_empty", "is_not_empty"];
+  if (["select", "status", "checkbox"].includes(property.type)) return ["equals", "not_equals", "is_empty", "is_not_empty"];
+  if (["multi-select", "relation", "files"].includes(property.type)) return ["contains", "not_contains", "is_empty", "is_not_empty"];
+  return ["contains", "not_contains", "equals", "not_equals", "starts_with", "ends_with", "is_empty", "is_not_empty"];
+}
+
+function defaultFilterValue(property?: DatabasePropertyDefinition) {
+  if (!property) return "";
+  if (property.type === "number") return 0;
+  if (property.type === "checkbox") return true;
+  if (["select", "multi-select", "status"].includes(property.type)) return property.options?.[0] ?? "";
+  return "";
+}
+
+function defaultFilterCondition(schema: DatabasePropertySchema): FilterCondition {
+  const property = schema.properties[0];
+  return { type: "condition", property: property?.id ?? "title", operator: filterOperators(property)[0], value: defaultFilterValue(property) };
+}
+
+function FilterConditionEditor({ condition, schema, onChange, onRemove }: { condition: FilterCondition; schema: DatabasePropertySchema; onChange: (next: FilterCondition) => void; onRemove: () => void }) {
+  const property = schema.properties.find((item) => item.id === condition.property) ?? schema.properties[0];
+  const operators = filterOperators(property);
+  const needsValue = !["is_empty", "is_not_empty"].includes(condition.operator);
+  const updateProperty = (propertyId: string) => {
+    const nextProperty = schema.properties.find((item) => item.id === propertyId);
+    onChange({ type: "condition", property: propertyId, operator: filterOperators(nextProperty)[0], value: defaultFilterValue(nextProperty) });
+  };
+  return <div className="filter-condition-row"><select value={condition.property} onChange={(event) => updateProperty(event.target.value)} aria-label="筛选属性">{schema.properties.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select value={condition.operator} onChange={(event) => onChange({ ...condition, operator: event.target.value as FilterCondition["operator"] })} aria-label="筛选运算符">{operators.map((operator) => <option key={operator} value={operator}>{filterOperatorLabels[operator]}</option>)}</select>{needsValue && property?.options?.length ? <select value={String(condition.value ?? "")} onChange={(event) => onChange({ ...condition, value: event.target.value })} aria-label="筛选值">{property.options.map((option) => <option key={option}>{option}</option>)}</select> : needsValue && property?.type === "checkbox" ? <select value={String(Boolean(condition.value))} onChange={(event) => onChange({ ...condition, value: event.target.value === "true" })} aria-label="筛选值"><option value="true">已勾选</option><option value="false">未勾选</option></select> : needsValue ? <input type={property?.type === "number" ? "number" : ["date", "created-time", "last-edited-time"].includes(property?.type ?? "") ? "date" : "text"} value={String(condition.value ?? "")} onChange={(event) => onChange({ ...condition, value: property?.type === "number" ? Number(event.target.value) : event.target.value })} placeholder="值" aria-label="筛选值" /> : <span className="filter-no-value">无需值</span>}<button className="filter-remove" onClick={onRemove} aria-label="删除筛选条件">×</button></div>;
+}
+
+function FilterGroupEditor({ group, schema, depth = 1, onChange, onRemove }: { group: FilterGroup; schema: DatabasePropertySchema; depth?: number; onChange: (next: FilterGroup) => void; onRemove?: () => void }) {
+  const updateChild = (index: number, child: FilterCondition | FilterGroup) => onChange({ ...group, filters: group.filters.map((item, itemIndex) => itemIndex === index ? child : item) });
+  const removeChild = (index: number) => onChange({ ...group, filters: group.filters.filter((_, itemIndex) => itemIndex !== index) });
+  return <section className={`filter-group-editor depth-${depth}`}><header><span>{depth === 1 ? "满足" : `条件组 ${depth}`}</span><select value={group.operator} onChange={(event) => onChange({ ...group, operator: event.target.value as FilterGroup["operator"] })}><option value="and">全部条件（AND）</option><option value="or">任一条件（OR）</option></select>{onRemove && <button onClick={onRemove}>删除组</button>}</header><div className="filter-group-children">{group.filters.map((child, index) => child.type === "condition" ? <FilterConditionEditor key={`${depth}-condition-${index}`} condition={child} schema={schema} onChange={(next) => updateChild(index, next)} onRemove={() => removeChild(index)} /> : <FilterGroupEditor key={`${depth}-group-${index}`} group={child} schema={schema} depth={depth + 1} onChange={(next) => updateChild(index, next)} onRemove={() => removeChild(index)} />)}{group.filters.length === 0 && <p>还没有筛选条件，所有记录都会显示。</p>}</div><footer><button onClick={() => onChange({ ...group, filters: [...group.filters, defaultFilterCondition(schema)] })}>＋ 条件</button>{depth < 3 && <button onClick={() => onChange({ ...group, filters: [...group.filters, { type: "group", operator: "and", filters: [defaultFilterCondition(schema)] }] })}>＋ 条件组</button>}</footer></section>;
+}
+
+function SortEditor({ sorts, schema, onChange }: { sorts: ViewSort[]; schema: DatabasePropertySchema; onChange: (next: ViewSort[]) => void }) {
+  const available = schema.properties.find((property) => !sorts.some((sort) => sort.property === property.id));
+  const move = (index: number, direction: -1 | 1) => {
+    const destination = index + direction;
+    if (destination < 0 || destination >= sorts.length) return;
+    const next = [...sorts];
+    [next[index], next[destination]] = [next[destination], next[index]];
+    onChange(next);
+  };
+  return <div className="database-control-popover sort-editor"><strong>多重排序 · 从上到下优先</strong>{sorts.map((sort, index) => <div className="sort-editor-row" key={`${sort.property}-${index}`}><span><button onClick={() => move(index, -1)} disabled={index === 0}>↑</button><button onClick={() => move(index, 1)} disabled={index === sorts.length - 1}>↓</button></span><select value={sort.property} onChange={(event) => onChange(sorts.map((item, itemIndex) => itemIndex === index ? { ...item, property: event.target.value } : item))}>{schema.properties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select><select value={sort.direction} onChange={(event) => onChange(sorts.map((item, itemIndex) => itemIndex === index ? { ...item, direction: event.target.value as ViewSort["direction"] } : item))}><option value="ascending">升序</option><option value="descending">降序</option></select><button className="filter-remove" onClick={() => onChange(sorts.filter((_, itemIndex) => itemIndex !== index))}>×</button></div>)}{sorts.length === 0 && <small>未设置排序，保留数据源顺序。</small>}<button className="sort-add" disabled={!available} onClick={() => available && onChange([...sorts, { property: available.id, direction: "ascending" }])}>＋ 添加排序</button></div>;
+}
+
 function DatabaseView() {
   const [view, setView] = useState<ViewType>("table");
   const [tasks, setTasks] = useState(initialTasks);
@@ -1089,8 +1236,7 @@ function DatabaseView() {
   const [toolMenu, setToolMenu] = useState<"filter" | "sort" | "group" | "properties" | undefined>();
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("All");
-  const [priorityFilter, setPriorityFilter] = useState("All");
+  const [filterGroup, setFilterGroup] = useState<FilterGroup>({ type: "group", operator: "and", filters: [] });
   const [sorts, setSorts] = useState<ViewSort[]>([]);
   const [groupBy, setGroupBy] = useState("");
   const [subGroupBy, setSubGroupBy] = useState("");
@@ -1118,6 +1264,7 @@ function DatabaseView() {
         setRemoteViewConfigs(configs);
         viewRevisionsRef.current = Object.fromEntries(payload.views.map((item) => [item.type, item.revision]));
         const tableConfig = configs.table ?? {};
+        setFilterGroup(tableConfig.filters ?? { type: "group", operator: "and", filters: [] });
         setSorts(tableConfig.sorts ?? []);
         setGroupBy(tableConfig.groupBy ?? "");
         setSubGroupBy(tableConfig.subGroupBy ?? "");
@@ -1127,6 +1274,7 @@ function DatabaseView() {
         setTasks(payload.records.map((record) => {
           const marker = record.markdown.match(/<!-- sophie:block=.*?-->\n([\s\S]*)$/);
           const properties = { ...record.rawProperties, ...record.properties };
+          if (!properties.place && Number.isFinite(Number(properties.x)) && Number.isFinite(Number(properties.y))) properties.place = `${properties.x},${properties.y}`;
           return {
             id: record.id,
             title: record.title,
@@ -1153,6 +1301,7 @@ function DatabaseView() {
     setView(next);
     setToolMenu(undefined);
     const config = remoteViewConfigs[next] ?? {};
+    setFilterGroup(config.filters ?? { type: "group", operator: "and", filters: [] });
     setSorts(config.sorts ?? []);
     setGroupBy(config.groupBy ?? (next === "board" ? "status" : ""));
     setSubGroupBy(config.subGroupBy ?? "");
@@ -1160,12 +1309,7 @@ function DatabaseView() {
     setHiddenProperties(propertySchema.properties.filter((property) => property.type !== "title").map((property) => property.id).filter((property) => !visible.includes(property)));
   };
 
-  const filter = useMemo<FilterGroup | undefined>(() => {
-    const filters: FilterGroup["filters"] = [];
-    if (statusFilter !== "All") filters.push({ type: "condition", property: "status", operator: "equals", value: statusFilter });
-    if (priorityFilter !== "All") filters.push({ type: "condition", property: "priority", operator: "equals", value: priorityFilter });
-    return filters.length ? { type: "group", operator: "and", filters } : undefined;
-  }, [priorityFilter, statusFilter]);
+  const filter = filterGroup.filters.length ? filterGroup : undefined;
 
   const visibleTasks = useMemo(() => applyViewQuery(tasks.map((task) => ({ ...task, properties: {
     ...task.properties,
@@ -1244,50 +1388,69 @@ function DatabaseView() {
     } finally { setSchemaSaving(false); }
   }, [schemaRevision]);
 
-  const move = (id: string, status: Task["status"]) => {
+  const move = (id: string, propertyId: string, value: unknown) => {
     const task = tasks.find((item) => item.id === id);
     if (!task) return;
-    const next = { ...task, status };
+    const property = propertySchema.properties.find((item) => item.id === propertyId);
+    const propertyValue = property?.type === "multi-select" ? (value === null ? [] : [String(value)]) : value;
+    const next: Task = { ...task, properties: { ...task.properties, [propertyId]: propertyValue } };
+    if (propertyId === "status") next.status = String(value ?? "") as Task["status"];
+    if (propertyId === "priority") next.priority = String(value ?? "") as Task["priority"];
+    if (propertyId === "owner") next.owner = String(value ?? "");
+    if (propertyId === "due") next.due = String(value ?? "");
+    if (propertyId === "tags") next.tags = Array.isArray(propertyValue) ? propertyValue.map(String) : [];
+    if (propertyId === "progress") next.progress = Number(value ?? 0);
     setTasks((current) => current.map((item) => item.id === id ? next : item));
     void saveTask(next).catch(() => undefined);
   };
-  const addTask = (title: string) => {
+  const addTask = (title: string, formProperties: Record<string, unknown> = {}) => {
     const nextNumber = Math.max(113, ...tasks.map((task) => Number(task.id.replace(/\D/g, "")) || 0)) + 1;
-    const task: Task = { id: `T-${nextNumber}`, title, status: "Inbox", priority: "Medium", due: "未设置", day: new Date().getDate(), owner: "SC", tags: ["Product"], progress: 0, x: 50, y: 50, body: "" };
+    const task: Task = { id: `T-${nextNumber}`, title, status: String(formProperties.status ?? "Inbox") as Task["status"], priority: String(formProperties.priority ?? "Medium") as Task["priority"], due: String(formProperties.due ?? "未设置"), day: new Date().getDate(), owner: String(formProperties.owner ?? "SC"), tags: Array.isArray(formProperties.tags) ? formProperties.tags.map(String) : [], progress: Number(formProperties.progress ?? 0), x: 50, y: 50, body: "", properties: formProperties };
     setTasks((current) => [...current, task]);
     setSelectedTask(task);
     void saveTask(task).catch(() => undefined);
   };
 
   const groupedTasks = useMemo(() => {
-    if (!groupBy) return new Map<string, typeof visibleTasks>([["", visibleTasks]]);
-    const groups = new Map<string, typeof visibleTasks>();
-    for (const task of visibleTasks) {
-      const raw = (task.properties as Record<string, string | number | boolean | string[] | null | undefined>)[groupBy];
-      const key = Array.isArray(raw) ? raw.join(", ") || "未填写" : String(raw ?? "未填写");
-      groups.set(key, [...(groups.get(key) ?? []), task]);
-    }
-    return groups;
+    return groupTasksByProperty(visibleTasks, groupBy);
   }, [groupBy, visibleTasks]);
 
-  const filterCount = Number(statusFilter !== "All") + Number(priorityFilter !== "All");
+  const boardProperty = propertySchema.properties.find((property) => property.id === groupBy)
+    ?? propertySchema.properties.find((property) => ["status", "select", "multi-select", "checkbox"].includes(property.type));
+  const boardSubGroupProperty = propertySchema.properties.find((property) => property.id === subGroupBy);
+  const dateProperty = propertySchema.properties.find((property) => property.type === "date")
+    ?? propertySchema.properties.find((property) => ["created-time", "last-edited-time"].includes(property.type));
+  const placeProperty = propertySchema.properties.find((property) => property.type === "place");
+  const chartGroupProperty = propertySchema.properties.find((property) => property.id === groupBy)
+    ?? propertySchema.properties.find((property) => ["status", "select", "multi-select"].includes(property.type));
+  const chartNumberProperty = propertySchema.properties.find((property) => property.type === "number");
+  const filterCount = useMemo(() => {
+    const count = (node: FilterCondition | FilterGroup): number => node.type === "condition" ? 1 : node.filters.reduce((sum, child) => sum + count(child), 0);
+    return count(filterGroup);
+  }, [filterGroup]);
   return (
     <main className="database-content">
       <header className="database-title"><div><span className="database-icon">▦</span><div><h1>产品任务</h1><p>{visibleTasks.length} / {tasks.length} 条记录 · {propertySchema.properties.length} 个属性 · {syncState === "synced" ? "云端已同步" : syncState === "saving" ? "保存中…" : syncState === "loading" ? "正在加载数据源…" : "离线副本"}</p></div></div><div><button className="quiet-button" onClick={() => setSchemaEditorOpen(true)}>编辑属性</button><button className="primary-small" onClick={() => addTask("未命名任务")}>＋ 新建</button></div></header>
       <div className="view-tabs"><div className="visible-tabs">{viewOptions.slice(0, 6).map((option) => <button className={view === option.id ? "active" : ""} key={option.id} onClick={() => selectView(option.id)}><span>{option.icon}</span>{option.label}</button>)}</div><div className="view-more"><button onClick={() => setViewMenu(!viewMenu)}>更多视图⌄</button>{viewMenu && <div className="view-menu">{viewOptions.slice(6).map((option) => <button key={option.id} onClick={() => { selectView(option.id); setViewMenu(false); }}><span>{option.icon}</span><div><b>{option.label}</b><small>{option.id === "form" ? "收集信息" : option.id === "map" ? "按位置展示" : "分析与组织数据"}</small></div></button>)}</div>}</div><div className="view-tools"><button className={searchOpen ? "active" : ""} onClick={() => setSearchOpen(!searchOpen)}>⌕</button><button className={toolMenu === "filter" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "filter" ? undefined : "filter")}>筛选 {filterCount > 0 && <b>{filterCount}</b>}</button><button className={toolMenu === "sort" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "sort" ? undefined : "sort")}>排序 {sorts.length > 0 && <b>{sorts.length}</b>}</button><button className={toolMenu === "group" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "group" ? undefined : "group")}>分组</button><button className={toolMenu === "properties" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "properties" ? undefined : "properties")}>属性</button></div></div>
-      {(searchOpen || toolMenu) && <div className="database-controls">{searchOpen && <label className="database-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索当前数据源…" /><button onClick={() => { setSearch(""); setSearchOpen(false); }}>×</button></label>}{toolMenu === "filter" && <div className="database-control-popover"><strong>高级筛选 · AND</strong><label>状态<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All</option>{(propertySchema.properties.find((property) => property.id === "status")?.options ?? ["Inbox", "In progress", "Review", "Done"]).map((option) => <option key={option}>{option}</option>)}</select></label><label>优先级<select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}><option>All</option>{(propertySchema.properties.find((property) => property.id === "priority")?.options ?? ["High", "Medium", "Low"]).map((option) => <option key={option}>{option}</option>)}</select></label><small>查询引擎支持 AND / OR 最多三层嵌套；此面板显示常用条件。</small></div>}{toolMenu === "sort" && <div className="database-control-popover"><strong>排序</strong><label>属性<select value={sorts[0]?.property ?? ""} onChange={(event) => setSorts(event.target.value ? [{ property: event.target.value, direction: sorts[0]?.direction ?? "ascending" }] : [])}><option value="">不排序</option>{propertySchema.properties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label><label>方向<select value={sorts[0]?.direction ?? "ascending"} onChange={(event) => setSorts((current) => current.length ? [{ ...current[0], direction: event.target.value as ViewSort["direction"] }] : [])}><option value="ascending">升序</option><option value="descending">降序</option></select></label></div>}{toolMenu === "group" && <div className="database-control-popover"><strong>分组与子分组</strong><label>分组<select value={groupBy} onChange={(event) => setGroupBy(event.target.value)}><option value="">不分组</option>{propertySchema.properties.filter((property) => property.type !== "title").map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label><label>子分组<select value={subGroupBy} onChange={(event) => setSubGroupBy(event.target.value)}><option value="">无</option>{propertySchema.properties.filter((property) => property.type !== "title" && property.id !== groupBy).map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label></div>}{toolMenu === "properties" && <div className="database-control-popover property-control"><strong>属性可见性</strong>{propertySchema.properties.filter((property) => property.type !== "title").map((property) => <label key={property.id}><input type="checkbox" checked={!hiddenProperties.includes(property.id)} onChange={() => setHiddenProperties((current) => current.includes(property.id) ? current.filter((item) => item !== property.id) : [...current, property.id])} /><span>{property.name}<small>{property.type}</small></span></label>)}<button className="schema-manage-button" onClick={() => { setToolMenu(undefined); setSchemaEditorOpen(true); }}>管理属性 Schema</button></div>}</div>}
+      {(searchOpen || toolMenu) && <div className="database-controls">
+        {searchOpen && <label className="database-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索当前数据源…" /><button onClick={() => { setSearch(""); setSearchOpen(false); }}>×</button></label>}
+        {toolMenu === "filter" && <div className="database-control-popover filter-builder"><strong>高级筛选 · 最多三层</strong><FilterGroupEditor group={filterGroup} schema={propertySchema} onChange={setFilterGroup} /><button className="filter-clear" disabled={filterCount === 0} onClick={() => setFilterGroup({ type: "group", operator: "and", filters: [] })}>清空全部筛选</button></div>}
+        {toolMenu === "sort" && <SortEditor sorts={sorts} schema={propertySchema} onChange={setSorts} />}
+        {toolMenu === "group" && <div className="database-control-popover"><strong>分组与子分组</strong><label>分组<select value={groupBy} onChange={(event) => setGroupBy(event.target.value)}><option value="">不分组</option>{propertySchema.properties.filter((property) => property.type !== "title").map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label><label>子分组<select value={subGroupBy} onChange={(event) => setSubGroupBy(event.target.value)}><option value="">无</option>{propertySchema.properties.filter((property) => property.type !== "title" && property.id !== groupBy).map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label></div>}
+        {toolMenu === "properties" && <div className="database-control-popover property-control"><strong>属性可见性</strong>{propertySchema.properties.filter((property) => property.type !== "title").map((property) => <label key={property.id}><input type="checkbox" checked={!hiddenProperties.includes(property.id)} onChange={() => setHiddenProperties((current) => current.includes(property.id) ? current.filter((item) => item !== property.id) : [...current, property.id])} /><span>{property.name}<small>{property.type}</small></span></label>)}<button className="schema-manage-button" onClick={() => { setToolMenu(undefined); setSchemaEditorOpen(true); }}>管理属性 Schema</button></div>}
+      </div>}
       <section className={`view-canvas view-${view}`}>
-        {view === "table" && <div className="grouped-database">{[...groupedTasks].map(([name, group]) => <section key={name || "all"}>{name && <header><strong>{name}</strong><span>{group.length}</span>{subGroupBy && <small>子分组：{propertySchema.properties.find((property) => property.id === subGroupBy)?.name ?? subGroupBy}</small>}</header>}<TableView tasks={group} schema={propertySchema} onOpen={setSelectedTask} hidden={hiddenProperties} /></section>)}</div>}
-        {view === "board" && <BoardView tasks={visibleTasks} move={move} onOpen={setSelectedTask} />}
-        {view === "timeline" && <TimelineView tasks={visibleTasks} />}
-        {view === "calendar" && <CalendarView tasks={visibleTasks} />}
+        {view === "table" && <div className="grouped-database">{[...groupedTasks].map(([name, group]) => <section key={name || "all"}>{name && <header><strong>{name}</strong><span>{group.length}</span></header>}{subGroupBy ? <div className="database-subgroups">{[...groupTasksByProperty(group, subGroupBy)].map(([subName, subRecords]) => <section key={subName}><header><strong>{subName}</strong><span>{subRecords.length}</span><small>{propertySchema.properties.find((property) => property.id === subGroupBy)?.name ?? subGroupBy}</small></header><TableView tasks={subRecords} schema={propertySchema} onOpen={setSelectedTask} hidden={hiddenProperties} /></section>)}</div> : <TableView tasks={group} schema={propertySchema} onOpen={setSelectedTask} hidden={hiddenProperties} />}</section>)}</div>}
+        {view === "board" && <BoardView tasks={visibleTasks} property={boardProperty} subGroupProperty={boardSubGroupProperty} move={move} onOpen={setSelectedTask} />}
+        {view === "timeline" && <TimelineView tasks={visibleTasks} dateProperty={dateProperty} />}
+        {view === "calendar" && <CalendarView tasks={visibleTasks} dateProperty={dateProperty} onOpen={setSelectedTask} />}
         {view === "list" && <div className="simple-list">{visibleTasks.map((task) => <button key={task.id} onClick={() => setSelectedTask(task)}><span className={`task-check ${task.status === "Done" ? "done" : ""}`}>{task.status === "Done" ? "✓" : ""}</span><strong>{task.title}</strong><span className={`status-chip ${task.status.replace(" ", "-").toLowerCase()}`}>{task.status}</span><small>{task.due}</small><i>›</i></button>)}</div>}
         {view === "gallery" && <GalleryView tasks={visibleTasks} onOpen={setSelectedTask} />}
-        {view === "chart" && <ChartView tasks={visibleTasks} />}
-        {view === "map" && <MapView tasks={visibleTasks} />}
+        {view === "chart" && <ChartView tasks={visibleTasks} groupProperty={chartGroupProperty} numberProperty={chartNumberProperty} />}
+        {view === "map" && <MapView tasks={visibleTasks} placeProperty={placeProperty} onOpen={setSelectedTask} />}
         {view === "feed" && <FeedView tasks={visibleTasks} />}
-        {view === "dashboard" && <DashboardView tasks={visibleTasks} />}
-        {view === "form" && <FormView addTask={addTask} />}
+        {view === "dashboard" && <DashboardView tasks={visibleTasks} schema={propertySchema} />}
+        {view === "form" && <FormView schema={propertySchema} addTask={addTask} />}
       </section>
       {selectedTask && <TaskPageDrawer key={selectedTask.id} task={selectedTask} schema={propertySchema} onClose={() => setSelectedTask(undefined)} onSave={saveTask} />}
       {schemaEditorOpen && <DatabaseSchemaEditor key={schemaRevision} schema={propertySchema} saving={schemaSaving} onClose={() => setSchemaEditorOpen(false)} onSave={savePropertySchema} />}

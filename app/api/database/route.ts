@@ -15,6 +15,31 @@ import {
 
 const SOURCE_KEY = "product-tasks";
 const viewTypes = ["table", "board", "timeline", "calendar", "list", "gallery", "chart", "map", "feed", "dashboard", "form"] as const;
+const filterOperators = ["equals", "not_equals", "contains", "not_contains", "starts_with", "ends_with", "greater_than", "less_than", "on_or_after", "on_or_before", "is_empty", "is_not_empty"] as const;
+const DatabaseValueSchema = z.union([z.string().max(10_000), z.number().finite(), z.boolean(), z.array(z.string().max(1_000)).max(100), z.null()]);
+const FilterConditionSchema = z.object({
+  type: z.literal("condition"),
+  property: z.string().min(1).max(120),
+  operator: z.enum(filterOperators),
+  value: DatabaseValueSchema.optional(),
+});
+const FilterGroupDepth3Schema = z.object({
+  type: z.literal("group"), operator: z.enum(["and", "or"]), filters: z.array(FilterConditionSchema).max(50),
+});
+const FilterGroupDepth2Schema = z.object({
+  type: z.literal("group"), operator: z.enum(["and", "or"]), filters: z.array(z.union([FilterConditionSchema, FilterGroupDepth3Schema])).max(50),
+});
+const FilterGroupSchema = z.object({
+  type: z.literal("group"), operator: z.enum(["and", "or"]), filters: z.array(z.union([FilterConditionSchema, FilterGroupDepth2Schema])).max(50),
+});
+const ViewConfigSchema = z.object({
+  visibleProperties: z.array(z.string().min(1).max(120)).max(100).default([]),
+  filters: FilterGroupSchema.nullable().default(null),
+  sorts: z.array(z.object({ property: z.string().min(1).max(120), direction: z.enum(["ascending", "descending"]) })).max(20).default([]),
+  groupBy: z.string().min(1).max(120).nullable().default(null),
+  subGroupBy: z.string().min(1).max(120).nullable().default(null),
+  openPagesIn: z.enum(["side-peek", "center-peek", "full-page"]).default("side-peek"),
+});
 
 const defaultRecords = [
   { id: "T-108", title: "完成 .sophie 离线包导入", status: "In progress", priority: "High", due: "7月18日", day: 18, owner: "SC", tags: ["Offline", "Core"], progress: 68, x: 62, y: 38 },
@@ -41,6 +66,11 @@ const sourceSchemaMarkdown = `# 产品任务数据源
 
 function safeJson<T>(source: string, fallback: T): T {
   try { return JSON.parse(source) as T; } catch { return fallback; }
+}
+
+function normalizeViewConfig(input: unknown) {
+  const parsed = ViewConfigSchema.safeParse(input);
+  return parsed.success ? parsed.data : ViewConfigSchema.parse({});
 }
 
 function recordMarkdown(id: string, title: string, properties: Record<string, unknown>, body?: string, sourceId = SOURCE_KEY) {
@@ -121,7 +151,7 @@ const ViewActionSchema = z.object({
     name: z.string().min(1).max(100),
     type: z.enum(viewTypes),
     sourceId: z.string().min(1).max(240).default(SOURCE_KEY),
-    config: z.record(z.string(), z.unknown()),
+    config: ViewConfigSchema,
     baseRevision: z.number().int().positive().optional(),
   }),
 });
@@ -168,7 +198,7 @@ export async function GET(request: Request) {
     const recordsById = new Map(rawRecords.map((record) => [record.id, { title: record.title, properties: record.rawProperties }]));
     return Response.json({
       source: { ...source, schema, schemaRevision: propertySchemaRow?.revision ?? 1, schemaMarkdown: propertySchemaRow?.schemaMarkdown ?? databasePropertySchemaMarkdown(String((source as { name?: string }).name ?? "数据源"), schema) },
-      views: views.results.map((view) => ({ ...view, config: safeJson(view.configJson, {}), configJson: undefined })),
+      views: views.results.map((view) => ({ ...view, config: normalizeViewConfig(safeJson(view.configJson, {})), configJson: undefined })),
       records: rawRecords.map((record) => ({
         ...record,
         properties: computeDatabaseProperties({

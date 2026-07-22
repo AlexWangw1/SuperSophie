@@ -1,6 +1,6 @@
 {
   "name": "supersophie",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "main": "desktop/main.cjs",
   "engines": {
@@ -51,6 +51,7 @@
   "build": {
     "appId": "com.supersophie.desktop",
     "productName": "SuperSophie",
+    "electronDist": "node_modules/electron/dist",
     "beforeBuild": "desktop/before-build.cjs",
     "directories": {
       "app": "desktop"
@@ -67,6 +68,14 @@
     "win": {
       "icon": "desktop/icon.ico",
       "target": "nsis"
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": "sophie",
+        "name": "SuperSophie Page",
+        "description": "SuperSophie 离线页面",
+        "role": "Editor"
+      }
+    ]
   }
 }

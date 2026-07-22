@@ -1,0 +1,44 @@
+:root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", system-ui, sans-serif; background: #090716; color: #f5efff; }
+* { box-sizing: border-box; }
+body { min-width: 720px; min-height: 100vh; margin: 0; background: radial-gradient(circle at 50% -10%, #31204f 0, #120d21 34rem, #090716 70rem); }
+button, input { font: inherit; }
+.offline-bar { position: sticky; z-index: 10; top: 0; display: flex; align-items: center; justify-content: space-between; min-height: 64px; padding: 0 28px; border-bottom: 1px solid rgb(210 188 255 / 12%); background: rgb(9 7 22 / 82%); backdrop-filter: blur(18px); }
+.brand, .bar-actions { display: flex; align-items: center; gap: 10px; }
+.brand > span { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 10px; color: #190e29; background: #d4b6ff; }
+.brand strong { font-size: 15px; }
+.brand small { color: #9d90af; }
+button, .file-button, .primary-file-button { border: 1px solid rgb(216 197 255 / 18%); border-radius: 11px; color: #e9ddfb; background: rgb(43 29 69 / 72%); cursor: pointer; }
+button, .file-button { padding: 9px 13px; font-size: 12px; }
+button:hover, .file-button:hover, .primary-file-button:hover { border-color: rgb(215 190 255 / 42%); background: #4d3475; }
+input[type="file"] { display: none; }
+main { width: min(900px, calc(100% - 64px)); margin: 0 auto; padding: 68px 0 110px; }
+.empty-state { display: grid; justify-items: center; width: min(560px, 100%); margin: 8vh auto 0; text-align: center; }
+.empty-mark { display: grid; place-items: center; width: 76px; height: 76px; border: 1px solid rgb(225 207 255 / 28%); border-radius: 24px; color: #1a1027; background: linear-gradient(145deg, #eadcff, #a87de1); box-shadow: 0 24px 70px rgb(79 45 119 / 34%); font: 700 30px Georgia, serif; }
+.empty-state h1 { margin: 27px 0 9px; font-size: 30px; }
+.empty-state p { max-width: 500px; margin: 0; color: #aa9dbd; line-height: 1.8; }
+.empty-state small { margin-top: 14px; color: #6f647d; }
+.primary-file-button { margin-top: 28px; padding: 13px 20px; background: #7951ad; }
+.error-state { margin: 24px 0; padding: 16px 18px; border: 1px solid rgb(255 127 154 / 26%); border-radius: 14px; color: #ffc8d3; background: rgb(100 31 51 / 22%); }
+.error-state p { margin: 7px 0 0; color: #dca6b3; }
+.page-view { padding: 0 10px; }
+.page-heading { padding-bottom: 30px; border-bottom: 1px solid rgb(216 196 255 / 12%); }
+.page-icon { display: block; min-height: 12px; margin-bottom: 14px; font-size: 46px; }
+.page-heading h1 { margin: 0; font-size: clamp(34px, 6vw, 58px); line-height: 1.1; letter-spacing: -0.035em; }
+.page-heading p { margin: 15px 0 0; color: #81748f; font-size: 12px; }
+.page-properties { display: grid; grid-template-columns: minmax(120px, 190px) 1fr; gap: 0; margin: 24px 0 42px; padding: 12px 0; border-block: 1px solid rgb(216 196 255 / 10%); }
+.page-properties dt, .page-properties dd { margin: 0; padding: 8px 10px; font-size: 13px; }
+.page-properties dt { color: #81758f; }
+.page-properties dd { color: #cfc3dd; word-break: break-word; }
+.page-blocks { font-size: 16px; line-height: 1.75; }
+.page-block { margin: 11px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.page-block.heading { margin-top: 34px; font-size: 25px; line-height: 1.3; }
+.page-block.quote { padding-left: 17px; border-left: 3px solid #8e69bb; color: #c4b6d4; }
+.page-block.callout { padding: 16px 18px; border: 1px solid rgb(193 160 237 / 20%); border-radius: 14px; background: rgb(70 47 101 / 26%); }
+.page-block.code { overflow: auto; padding: 17px 18px; border: 1px solid rgb(216 196 255 / 12%); border-radius: 14px; background: #0b0910; color: #e2d3f5; font: 13px/1.65 Consolas, monospace; }
+.page-block.todo { display: flex; gap: 10px; align-items: flex-start; }
+.page-block.todo input { margin-top: 7px; accent-color: #9b6fd1; }
+.page-block.image { display: block; max-width: 100%; max-height: 70vh; margin: 24px auto; border-radius: 16px; box-shadow: 0 22px 70px rgb(0 0 0 / 25%); }
+.page-block.file, .page-block.reference, .page-block.database { display: flex; align-items: center; gap: 10px; width: fit-content; padding: 12px 15px; border: 1px solid rgb(216 196 255 / 14%); border-radius: 12px; color: #d9c9ee; background: rgb(38 26 60 / 42%); text-decoration: none; }
+.page-block.divider { height: 1px; margin: 31px 0; border: 0; background: rgb(216 196 255 / 14%); }
+details.page-block { padding: 6px 0; }
+summary { cursor: pointer; }

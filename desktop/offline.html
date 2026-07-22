@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' blob: data:; style-src 'self'; script-src 'self';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SuperSophie 离线阅读</title>
+    <link rel="stylesheet" href="./offline.css" />
+  </head>
+  <body>
+    <header class="offline-bar">
+      <div class="brand"><span>✦</span><strong>SuperSophie</strong><small>离线阅读</small></div>
+      <div class="bar-actions">
+        <label class="file-button">打开 .sophie<input id="package-picker" type="file" accept=".sophie,application/x-sophie-page" /></label>
+        <button id="retry-online" type="button">重新连接云端</button>
+      </div>
+    </header>
+    <main>
+      <section id="empty-state" class="empty-state">
+        <div class="empty-mark">S</div>
+        <h1>当前处于离线模式</h1>
+        <p>云端暂时不可达，但你仍可以直接打开并完整查看 `.sophie` 页面包。</p>
+        <label class="primary-file-button">选择离线页面<input type="file" data-package-picker accept=".sophie,application/x-sophie-page" /></label>
+        <small>内容会在本机校验，离线阅读不会连接网络。</small>
+      </section>
+      <section id="error-state" class="error-state" hidden>
+        <strong>无法打开这个页面</strong>
+        <p id="error-message"></p>
+      </section>
+      <article id="page-view" class="page-view" hidden>
+        <header class="page-heading">
+          <span id="page-icon" class="page-icon"></span>
+          <h1 id="page-title"></h1>
+          <p id="page-meta"></p>
+        </header>
+        <dl id="page-properties" class="page-properties"></dl>
+        <div id="page-blocks" class="page-blocks"></div>
+      </article>
+    </main>
+    <script src="./offline-package.js"></script>
+    <script src="./offline.js"></script>
+  </body>
+</html>

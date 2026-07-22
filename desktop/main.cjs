@@ -1,18 +1,26 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, screen } = require("electron");
 const path = require("node:path");
-const { pathToFileURL } = require("node:url");
+const { fileURLToPath, pathToFileURL } = require("node:url");
 const fs = require("node:fs/promises");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 
 const PRODUCT_URL = "https://supersophie-workspace.shijiewang0310.chatgpt.site";
+const MAX_SOPHIE_FILE_BYTES = 100 * 1024 * 1024;
 let mainWindow;
 let petWindow;
 let tray;
 let petEnabled = true;
 let isQuitting = false;
 let codeProjectRoot;
+let loadingOfflineShell = false;
+let forceOffline = process.argv.includes("--offline") || process.env.SUPERSOPHIE_OFFLINE === "1";
+const pendingSophieFiles = [];
+let pendingSophieRead;
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) app.quit();
 
 const CODE_EXTENSIONS = new Set([
   ".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".html", ".java", ".js", ".json", ".jsx",
@@ -21,11 +29,111 @@ const CODE_EXTENSIONS = new Set([
 ]);
 const IGNORED_DIRECTORIES = new Set([".git", ".next", ".vinext", ".wrangler", "build", "coverage", "dist", "node_modules", "out"]);
 
-function assertTrustedRenderer(event) {
+function productUrl() {
+  return process.env.SUPERSOPHIE_URL || (app.isPackaged ? PRODUCT_URL : "http://localhost:3000");
+}
+
+function trustedDesktopFiles() {
+  return new Set(["pet.html", "offline.html"].map((name) => path.resolve(__dirname, name)));
+}
+
+function isTrustedDesktopUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "file:" && trustedDesktopFiles().has(path.resolve(fileURLToPath(parsed)));
+  } catch {
+    return false;
+  }
+}
+
+function isTrustedWebUrl(value) {
+  try {
+    const origin = new URL(value).origin;
+    return origin === new URL(productUrl()).origin || origin === "http://localhost:3000";
+  } catch {
+    return false;
+  }
+}
+
+function assertTrustedRenderer(event, allowDesktopFile = false) {
   const senderUrl = event.senderFrame?.url || "";
-  const origin = new URL(senderUrl).origin;
-  const productOrigin = new URL(process.env.SUPERSOPHIE_URL || PRODUCT_URL).origin;
-  if (origin !== productOrigin && origin !== "http://localhost:3000") throw new Error("Untrusted renderer");
+  if (isTrustedWebUrl(senderUrl)) return;
+  if (allowDesktopFile && isTrustedDesktopUrl(senderUrl)) return;
+  throw new Error("Untrusted renderer");
+}
+
+function desktopSettingsPath() {
+  return path.join(app.getPath("userData"), "desktop-settings.json");
+}
+
+async function loadDesktopSettings() {
+  try {
+    const settings = JSON.parse(await fs.readFile(desktopSettingsPath(), "utf8"));
+    if (typeof settings.petEnabled === "boolean") petEnabled = settings.petEnabled;
+  } catch (error) {
+    if (error.code !== "ENOENT") console.warn("Unable to read desktop settings", error.message);
+  }
+}
+
+async function saveDesktopSettings() {
+  const target = desktopSettingsPath();
+  const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(temporary, JSON.stringify({ version: 1, petEnabled }), { encoding: "utf8", flag: "wx" });
+  try {
+    await fs.rename(temporary, target);
+  } catch (error) {
+    if (!["EEXIST", "EPERM"].includes(error.code)) throw error;
+    await fs.copyFile(temporary, target);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
+}
+
+function sophieFileFromArguments(argv, workingDirectory = process.cwd()) {
+  const candidate = argv.find((value) => typeof value === "string" && path.extname(value).toLowerCase() === ".sophie");
+  return candidate ? path.resolve(workingDirectory, candidate) : undefined;
+}
+
+function notifyPendingSophieFile() {
+  if (!pendingSophieFiles.length || !mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return;
+  mainWindow.webContents.send("sophie:package-available", path.basename(pendingSophieFiles[0]));
+}
+
+function queueSophieFile(filePath) {
+  if (!filePath || path.extname(filePath).toLowerCase() !== ".sophie") return;
+  const resolved = path.resolve(filePath);
+  if (!pendingSophieFiles.includes(resolved)) pendingSophieFiles.push(resolved);
+  while (pendingSophieFiles.length > 10) pendingSophieFiles.shift();
+  if (app.isReady()) showMain();
+  notifyPendingSophieFile();
+}
+
+async function consumePendingSophieFile() {
+  if (pendingSophieRead) return pendingSophieRead;
+  pendingSophieRead = (async () => {
+    const filePath = pendingSophieFiles[0];
+    if (!filePath) return null;
+    try {
+      const stats = await fs.stat(filePath);
+      if (!stats.isFile() || stats.size > MAX_SOPHIE_FILE_BYTES) {
+        throw new Error(".sophie 文件无效或超过 100 MB 桌面读取限制");
+      }
+      const content = await fs.readFile(filePath, "utf8");
+      pendingSophieFiles.shift();
+      return { name: path.basename(filePath), content };
+    } catch (error) {
+      pendingSophieFiles.shift();
+      if (error.code === "ENOENT") throw new Error(".sophie 文件不存在或已经被移动");
+      throw error;
+    }
+  })();
+  try {
+    return await pendingSophieRead;
+  } finally {
+    pendingSophieRead = undefined;
+    notifyPendingSophieFile();
+  }
 }
 
 function resolveCodeProjectPath(relativePath) {
@@ -95,8 +203,11 @@ async function saveProjectFile(input) {
   const target = resolveCodeProjectPath(input.path);
   await assertRealPathWithinProject(target, true);
   let current;
-  try { current = await fs.readFile(target, "utf8"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
+  try {
+    current = await fs.readFile(target, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
   if (current !== undefined && input.expectedHash !== fileHash(current)) throw new Error("FILE_CHANGED: 文件已被其他程序修改，请重新载入");
   if (current === undefined && input.expectedHash) throw new Error("FILE_CHANGED: 文件已经不存在");
   await fs.mkdir(path.dirname(target), { recursive: true });
@@ -113,11 +224,7 @@ async function saveProjectFile(input) {
 
 function runProjectCommand(commandName) {
   if (!codeProjectRoot) throw new Error("请先选择本地项目目录");
-  const commands = {
-    test: ["test"],
-    typecheck: ["exec", "tsc", "--noEmit"],
-    lint: ["lint"],
-  };
+  const commands = { test: ["test"], typecheck: ["exec", "tsc", "--noEmit"], lint: ["lint"] };
   const args = commands[commandName];
   if (!args) throw new Error("只允许 test、typecheck 或 lint");
   return new Promise((resolve, reject) => {
@@ -136,12 +243,19 @@ function runProjectCommand(commandName) {
 }
 
 function windowPreferences() {
-  return {
-    preload: path.join(__dirname, "preload.cjs"),
-    contextIsolation: true,
-    nodeIntegration: false,
-    sandbox: true,
-  };
+  return { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true };
+}
+
+function loadOfflineShell() {
+  if (!mainWindow || mainWindow.isDestroyed() || loadingOfflineShell) return;
+  loadingOfflineShell = true;
+  mainWindow.loadFile(path.join(__dirname, "offline.html"));
+}
+
+function loadProduct() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  loadingOfflineShell = false;
+  mainWindow.loadURL(productUrl());
 }
 
 function createMainWindow() {
@@ -159,8 +273,16 @@ function createMainWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  mainWindow.once("ready-to-show", () => mainWindow.show());
-  mainWindow.loadURL(process.env.SUPERSOPHIE_URL || (app.isPackaged ? PRODUCT_URL : "http://localhost:3000"));
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!isTrustedWebUrl(url) && !isTrustedDesktopUrl(url)) event.preventDefault();
+  });
+  mainWindow.webContents.on("did-fail-load", (_event, _errorCode, _description, _url, isMainFrame) => {
+    if (isMainFrame && !loadingOfflineShell) loadOfflineShell();
+  });
+  mainWindow.webContents.on("did-finish-load", notifyPendingSophieFile);
+  mainWindow.once("ready-to-show", () => mainWindow?.show());
+  if (forceOffline) loadOfflineShell();
+  else loadProduct();
 
   mainWindow.on("close", (event) => {
     if (isQuitting) return;
@@ -173,10 +295,7 @@ function createMainWindow() {
     isQuitting = true;
     petWindow?.destroy();
   });
-
-  mainWindow.on("closed", () => {
-    mainWindow = undefined;
-  });
+  mainWindow.on("closed", () => { mainWindow = undefined; });
 }
 
 function createPetWindow() {
@@ -197,15 +316,14 @@ function createPetWindow() {
   petWindow.setAlwaysOnTop(true, "screen-saver");
   petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   petWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  petWindow.webContents.on("will-navigate", (event, url) => {
+    if (!isTrustedDesktopUrl(url)) event.preventDefault();
+  });
   const petImagePath = app.isPackaged
     ? path.join(process.resourcesPath, "sophie-companion.png")
     : path.join(__dirname, "..", "public", "sophie-companion.png");
-  petWindow.loadFile(path.join(__dirname, "pet.html"), {
-    query: { image: pathToFileURL(petImagePath).href },
-  });
-  petWindow.on("closed", () => {
-    petWindow = undefined;
-  });
+  petWindow.loadFile(path.join(__dirname, "pet.html"), { query: { image: pathToFileURL(petImagePath).href } });
+  petWindow.on("closed", () => { petWindow = undefined; });
 }
 
 function placePet() {
@@ -216,13 +334,14 @@ function placePet() {
 }
 
 function showPet() {
-  if (!petEnabled) return;
+  if (!petEnabled || !app.isReady()) return;
   if (!petWindow) createPetWindow();
   placePet();
   petWindow.showInactive();
 }
 
 function showMain() {
+  if (!app.isReady()) return;
   if (!mainWindow) createMainWindow();
   petWindow?.hide();
   mainWindow.show();
@@ -235,8 +354,7 @@ function quitApplication() {
 }
 
 function createTray() {
-  const iconPath = path.join(__dirname, "icon.png");
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 32, height: 32 });
+  const icon = nativeImage.createFromPath(path.join(__dirname, "icon.png")).resize({ width: 32, height: 32 });
   tray = new Tray(icon);
   tray.setToolTip("SuperSophie");
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -248,45 +366,64 @@ function createTray() {
   tray.on("double-click", showMain);
 }
 
-app.whenReady().then(() => {
-  Menu.setApplicationMenu(null);
-  createMainWindow();
-  createPetWindow();
-  createTray();
-
-  ipcMain.handle("sophie:set-pet-enabled", (_event, enabled) => {
-    petEnabled = Boolean(enabled);
-    if (!petEnabled) petWindow?.hide();
+if (hasSingleInstanceLock) {
+  app.on("second-instance", (_event, argv, workingDirectory) => {
+    const filePath = sophieFileFromArguments(argv, workingDirectory);
+    if (filePath) queueSophieFile(filePath);
+    else showMain();
   });
-  ipcMain.handle("sophie:show-main", showMain);
-  ipcMain.handle("sophie:quit", quitApplication);
-  ipcMain.handle("sophie:choose-code-project", async (event) => {
-    assertTrustedRenderer(event);
-    const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"], title: "选择本地代码项目" });
-    if (result.canceled || !result.filePaths[0]) return null;
-    codeProjectRoot = path.resolve(result.filePaths[0]);
-    return { name: path.basename(codeProjectRoot), files: await listProjectFiles(codeProjectRoot) };
-  });
-  ipcMain.handle("sophie:read-code-file", async (event, relativePath) => {
-    assertTrustedRenderer(event);
-    return readProjectFile(relativePath);
-  });
-  ipcMain.handle("sophie:save-code-file", async (event, input) => {
-    assertTrustedRenderer(event);
-    return saveProjectFile(input);
-  });
-  ipcMain.handle("sophie:run-code-check", async (event, commandName) => {
-    assertTrustedRenderer(event);
-    return runProjectCommand(commandName);
+  app.on("open-file", (event, filePath) => {
+    event.preventDefault();
+    queueSophieFile(filePath);
   });
 
-  app.on("activate", showMain);
-});
+  app.whenReady().then(async () => {
+    await loadDesktopSettings();
+    Menu.setApplicationMenu(null);
+    createMainWindow();
+    createPetWindow();
+    createTray();
 
-app.on("before-quit", () => {
-  isQuitting = true;
-});
+    ipcMain.handle("sophie:set-pet-enabled", async (event, enabled) => {
+      assertTrustedRenderer(event, true);
+      petEnabled = Boolean(enabled);
+      if (!petEnabled) petWindow?.hide();
+      else if (mainWindow && !mainWindow.isVisible()) showPet();
+      await saveDesktopSettings();
+    });
+    ipcMain.handle("sophie:show-main", (event) => { assertTrustedRenderer(event, true); showMain(); });
+    ipcMain.handle("sophie:quit", (event) => { assertTrustedRenderer(event, true); quitApplication(); });
+    ipcMain.handle("sophie:pending-package", (event) => {
+      assertTrustedRenderer(event, true);
+      return pendingSophieFiles[0] ? path.basename(pendingSophieFiles[0]) : null;
+    });
+    ipcMain.handle("sophie:consume-open-package", async (event) => {
+      assertTrustedRenderer(event, true);
+      return consumePendingSophieFile();
+    });
+    ipcMain.handle("sophie:retry-online", (event) => {
+      assertTrustedRenderer(event, true);
+      forceOffline = false;
+      loadProduct();
+    });
+    ipcMain.handle("sophie:choose-code-project", async (event) => {
+      assertTrustedRenderer(event);
+      const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"], title: "选择本地代码项目" });
+      if (result.canceled || !result.filePaths[0]) return null;
+      codeProjectRoot = path.resolve(result.filePaths[0]);
+      return { name: path.basename(codeProjectRoot), files: await listProjectFiles(codeProjectRoot) };
+    });
+    ipcMain.handle("sophie:read-code-file", async (event, relativePath) => { assertTrustedRenderer(event); return readProjectFile(relativePath); });
+    ipcMain.handle("sophie:save-code-file", async (event, input) => { assertTrustedRenderer(event); return saveProjectFile(input); });
+    ipcMain.handle("sophie:run-code-check", async (event, commandName) => { assertTrustedRenderer(event); return runProjectCommand(commandName); });
 
+    const initialFile = sophieFileFromArguments(process.argv);
+    if (initialFile) queueSophieFile(initialFile);
+    app.on("activate", showMain);
+  });
+}
+
+app.on("before-quit", () => { isQuitting = true; });
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin" && (isQuitting || !petEnabled)) app.quit();
 });

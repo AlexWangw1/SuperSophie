@@ -288,6 +288,10 @@ type SpeechRecognitionLike = {
 type SophieDesktopBridge = {
   setPetEnabled: (enabled: boolean) => Promise<void> | void;
   showMain: () => Promise<void> | void;
+  pendingPackage: () => Promise<string | null>;
+  consumeOpenedPackage: () => Promise<{ name: string; content: string } | null>;
+  onPackageAvailable: (callback: (name: string) => void) => () => void;
+  retryOnline: () => Promise<void> | void;
   chooseCodeProject: () => Promise<{ name: string; files: Array<{ path: string; size: number }> } | null>;
   readCodeFile: (path: string) => Promise<{ path: string; content: string; hash: string }>;
   saveCodeFile: (input: { path: string; content: string; expectedHash: string | null }) => Promise<{ path: string; hash: string }>;
@@ -321,6 +325,11 @@ function ConversationHome({ go }: { go: (section: Section) => void }) {
   useEffect(() => {
     return () => recognitionRef.current?.stop();
   }, []);
+
+  useEffect(() => {
+    const desktop = (window as typeof window & { sophieDesktop?: SophieDesktopBridge }).sophieDesktop;
+    void desktop?.setPetEnabled(petEnabled);
+  }, [petEnabled]);
 
   useEffect(() => {
     fetch("/api/chat?latest=1")
@@ -438,8 +447,6 @@ function ConversationHome({ go }: { go: (section: Section) => void }) {
     const next = !petEnabled;
     setPetEnabled(next);
     localStorage.setItem("supersophie-pet-enabled", String(next));
-    const desktop = (window as typeof window & { sophieDesktop?: SophieDesktopBridge }).sophieDesktop;
-    await desktop?.setPetEnabled(next);
   };
 
   const railItems = [
@@ -645,10 +652,31 @@ function NotesView() {
   const fileInput = useRef<HTMLInputElement>(null);
   const assetInput = useRef<HTMLInputElement>(null);
 
+  const applyImportedPackage = useCallback(async (source: string) => {
+    const imported = await readSophiePackageWithAssets(source);
+    setPage(imported.page);
+    setPageAssets(imported.assets);
+    const summary = knowledgePageSummary(imported.page, { cloud: false, synced: false });
+    setPages((current) => [summary, ...current.filter((item) => item.id !== summary.id)]);
+    await cacheSophiePackage(imported.page, imported.assets);
+    localStorage.setItem("supersophie:last-page", imported.page.id);
+    setSaveState("offline");
+  }, []);
+
   useEffect(() => {
     const lastPageId = localStorage.getItem("supersophie:last-page") || initialPage.id;
     let cancelled = false;
     const load = async () => {
+      const desktop = (window as typeof window & { sophieDesktop?: SophieDesktopBridge }).sophieDesktop;
+      const openedPackage = await desktop?.consumeOpenedPackage();
+      if (openedPackage) {
+        try {
+          await applyImportedPackage(openedPackage.content);
+          return;
+        } catch (error) {
+          alert(error instanceof Error ? error.message : "无法打开文件");
+        }
+      }
       const cachedPages = await listCachedPages();
       const cached = await readCachedSophiePackage(lastPageId);
       const cachedSummaries = cachedPages.map((item) => knowledgePageSummary(item, { cloud: false, synced: false }));
@@ -699,7 +727,17 @@ function NotesView() {
     };
     void load().catch(() => undefined);
     return () => { cancelled = true; };
-  }, []);
+  }, [applyImportedPackage]);
+
+  useEffect(() => {
+    const desktop = (window as typeof window & { sophieDesktop?: SophieDesktopBridge }).sophieDesktop;
+    if (!desktop) return;
+    return desktop.onPackageAvailable(() => {
+      void desktop.consumeOpenedPackage()
+        .then((openedPackage) => openedPackage && applyImportedPackage(openedPackage.content))
+        .catch((error) => alert(error instanceof Error ? error.message : "无法打开文件"));
+    });
+  }, [applyImportedPackage]);
 
   const updateBlock = (id: string, patch: Partial<SophieBlock>) => {
     setPage((current) => ({ ...current, blocks: current.blocks.map((block) => {
@@ -783,13 +821,7 @@ function NotesView() {
   const importPage = async (file?: File) => {
     if (!file) return;
     try {
-      const imported = await readSophiePackageWithAssets(await file.text());
-      setPage(imported.page); setPageAssets(imported.assets);
-      const summary = knowledgePageSummary(imported.page, { cloud: false, synced: false });
-      setPages((current) => [summary, ...current.filter((item) => item.id !== summary.id)]);
-      await cacheSophiePackage(imported.page, imported.assets);
-      localStorage.setItem("supersophie:last-page", imported.page.id);
-      setSaveState("offline");
+      await applyImportedPackage(await file.text());
     }
     catch (error) { alert(error instanceof Error ? error.message : "无法打开文件"); }
   };
@@ -2161,6 +2193,12 @@ export function SophieWorkspace() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  useEffect(() => {
+    const desktop = (window as typeof window & { sophieDesktop?: SophieDesktopBridge }).sophieDesktop;
+    if (!desktop) return;
+    void desktop.pendingPackage().then((name) => { if (name) setSection("notes"); }).catch(() => undefined);
+    return desktop.onPackageAvailable(() => setSection("notes"));
+  }, []);
   useEffect(() => {
     const requestedSection = new URLSearchParams(location.search).get("section");
     const frame = requestAnimationFrame(() => {

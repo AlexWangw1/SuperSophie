@@ -1,7 +1,8 @@
 {
   "name": "supersophie-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
+  "author": "SuperSophie",
   "description": "SuperSophie desktop shell and companion",
   "main": "main.cjs"
 }

@@ -54,7 +54,8 @@
     "electronDist": "node_modules/electron/dist",
     "beforeBuild": "desktop/before-build.cjs",
     "directories": {
-      "app": "desktop"
+      "app": "desktop",
+      "output": "desktop-dist"
     },
     "files": [
       "**/*"

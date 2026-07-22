@@ -57,6 +57,7 @@ function friendlyError(error: unknown) {
     account_handle_taken: "这个账户名已经被使用。",
     invalid_credentials: "账户名或访问密钥不正确。",
     too_many_login_attempts: "尝试次数过多，请 15 分钟后再试。",
+    too_many_registration_attempts: "这条网络今天创建的账户过多，请稍后再试。",
     invalid_registration: "请检查账户名、显示名称和访问密钥。",
     invalid_current_key: "当前访问密钥不正确。",
     workspace_access_denied: "你没有这个工作区的访问权限。",

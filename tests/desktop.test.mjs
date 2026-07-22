@@ -12,7 +12,7 @@ const readWorkspaceFile = (relativePath) => readFile(new URL(`../${relativePath}
 test("desktop package registers .sophie files and has aligned versions", async () => {
   const rootPackage = JSON.parse(await readWorkspaceFile("package.json"));
   const desktopPackage = JSON.parse(await readWorkspaceFile("desktop/package.json"));
-  assert.equal(rootPackage.version, "0.2.0");
+  assert.equal(rootPackage.version, "0.3.0");
   assert.equal(desktopPackage.version, rootPackage.version);
   assert.equal(rootPackage.build.electronDist, "node_modules/electron/dist");
   assert.deepEqual(rootPackage.build.fileAssociations, [{

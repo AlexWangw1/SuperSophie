@@ -78,3 +78,22 @@ test("keeps session tokens out of browser storage and stores Markdown security e
     assert.match(schema, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
   }
 });
+
+test("uses only SuperSophie authentication and rate-limits public registration", async () => {
+  const [page, gate, register, desktop] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/auth-gate.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/auth/register/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/main.cjs", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /<AuthGate>/);
+  assert.match(gate, /\/api\/auth\/register/);
+  assert.match(gate, /\/api\/auth\/login/);
+  assert.match(register, /MAX_REGISTRATIONS_PER_WINDOW/);
+  assert.match(register, /too_many_registration_attempts/);
+  assert.doesNotMatch(desktop, /auth\.openai\.com|chatgpt\.com/);
+  await assert.rejects(
+    readFile(new URL("../app/chatgpt-auth.ts", import.meta.url), "utf8"),
+    (error) => error && typeof error === "object" && "code" in error && error.code === "ENOENT",
+  );
+});

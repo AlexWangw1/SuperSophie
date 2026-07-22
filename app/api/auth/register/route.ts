@@ -7,6 +7,7 @@ import {
   deriveAccessKey,
   deviceLabel,
   normalizeHandle,
+  sha256,
   writeSecurityEvent,
 } from "../../../../lib/auth";
 
@@ -17,11 +18,58 @@ const RegisterSchema = z.object({
   workspaceName: z.string().trim().min(1).max(80),
 });
 
+const REGISTRATION_WINDOW_MS = 24 * 60 * 60_000;
+const MAX_REGISTRATIONS_PER_WINDOW = 3;
+
+type RegistrationLimit = {
+  failures: number;
+  windowStartedAt: string;
+  blockedUntil: string | null;
+};
+
+async function registrationLimitId(request: Request) {
+  const address = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for")?.split(",")[0] || "local";
+  return sha256(`register:${address}`);
+}
+
+async function registrationLimit(id: string) {
+  return env.DB.prepare(
+    `SELECT failures, window_started_at AS windowStartedAt, blocked_until AS blockedUntil
+     FROM auth_login_limits WHERE id = ? LIMIT 1`,
+  ).bind(id).first<RegistrationLimit>();
+}
+
+async function recordRegistration(id: string, current: RegistrationLimit | null) {
+  const now = Date.now();
+  const withinWindow = current && now - Date.parse(current.windowStartedAt) < REGISTRATION_WINDOW_MS;
+  const registrations = withinWindow ? current.failures + 1 : 1;
+  const windowStartedAt = withinWindow ? current.windowStartedAt : new Date(now).toISOString();
+  const blockedUntil = registrations >= MAX_REGISTRATIONS_PER_WINDOW
+    ? new Date(Date.parse(windowStartedAt) + REGISTRATION_WINDOW_MS).toISOString()
+    : null;
+  await env.DB.prepare(
+    `INSERT INTO auth_login_limits (id, failures, window_started_at, blocked_until, updated_at)
+     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(id) DO UPDATE SET failures = excluded.failures,
+       window_started_at = excluded.window_started_at,
+       blocked_until = excluded.blocked_until,
+       updated_at = CURRENT_TIMESTAMP`,
+  ).bind(id, registrations, windowStartedAt, blockedUntil).run();
+}
+
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
     const payload = RegisterSchema.parse(await request.json());
     await ensureSchema();
+    const limitId = await registrationLimitId(request);
+    const limit = await registrationLimit(limitId);
+    if (limit?.blockedUntil && Date.parse(limit.blockedUntil) > Date.now()) {
+      return Response.json({ error: "too_many_registration_attempts" }, {
+        status: 429,
+        headers: { "retry-after": String(Math.ceil((Date.parse(limit.blockedUntil) - Date.now()) / 1000)) },
+      });
+    }
     const handle = normalizeHandle(payload.handle);
     const existing = await env.DB.prepare(`SELECT id FROM users WHERE handle = ? LIMIT 1`).bind(handle).first();
     if (existing) return Response.json({ error: "account_handle_taken" }, { status: 409 });
@@ -43,6 +91,7 @@ export async function POST(request: Request) {
         `INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'owner')`,
       ).bind(workspaceId, userId),
     ]);
+    await recordRegistration(limitId, limit);
     const session = await createSession({ request, userId, workspaceId, deviceLabel: deviceLabel(request) });
     await writeSecurityEvent({
       userId,

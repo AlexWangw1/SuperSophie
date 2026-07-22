@@ -10,7 +10,7 @@ SuperSophie 是一个 Markdown-first、离线优先的个人智能工作空间�
 - 11 种数据库视图、23 种动态属性、跨数据源 Relation/Rollup、数据库模板、条件色，以及安全公式和按钮配置
 - 多模型目录：OpenAI、OpenRouter、Ollama 和自定义 OpenAI-compatible endpoint；支持按工作区加密保存模型与社交连接密钥
 - App Cloud revision 代码编辑器、桌面受限本地项目编辑/验证，以及 Agent 真实审阅
-- 账户、工作区和设备会话隔离；可轮换访问密钥并撤销其他设备
+- SuperSophie 自有账户、工作区和设备会话隔离，不依赖 ChatGPT/OpenAI 身份；可轮换访问密钥并撤销其他设备
 - OneDrive OAuth、加密刷新令牌、冲突保留、双向 Markdown 合并与校验附件镜像，及 App Cloud D1/R2 主存储
 - D1 文档索引、R2 附件存储与 IndexedDB 离线副本
 - Windows Electron 主程序、托盘与桌面宠物

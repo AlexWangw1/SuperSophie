@@ -48,9 +48,10 @@ import {
   type DatabasePropertySchema,
   type DatabasePropertyType,
 } from "../lib/database/properties";
+import { continuationBlockType, isTextEditableBlock, nearestEditableBlockId, splitBlockContent } from "../lib/block-editor";
 import { WorkspaceMenu } from "./auth-gate";
 
-type Section = "home" | "notes" | "database" | "agents" | "code" | "connectors";
+type Section = "home" | "notes" | "agents" | "code" | "connectors";
 type ViewType = "table" | "board" | "timeline" | "calendar" | "list" | "gallery" | "chart" | "map" | "feed" | "dashboard" | "form";
 type Task = {
   id: string;
@@ -84,7 +85,6 @@ type DatabaseViewConfig = {
 const navItems: Array<{ id: Section; icon: string; label: string; hint?: string }> = [
   { id: "home", icon: "⌂", label: "今天" },
   { id: "notes", icon: "✎", label: "笔记" },
-  { id: "database", icon: "▦", label: "数据库" },
   { id: "agents", icon: "✦", label: "Agent Work", hint: "3" },
   { id: "code", icon: "⌘", label: "代码" },
   { id: "connectors", icon: "◎", label: "连接器" },
@@ -128,6 +128,7 @@ const initialPage: SophiePage = {
     { id: "b4", type: "todo", content: "验证 .sophie 文件的导入、校验与恢复", checked: false },
     { id: "b5", type: "callout", content: "所有 Agent 产物都回写为 Markdown；密钥永远不进入文档。" },
     { id: "b6", type: "code", language: "typescript", content: "const workspace = await sophie.open({ offline: true });\nawait workspace.agents.run(\"准备发布\");" },
+    { id: "b7", type: "database", content: "product-tasks" },
   ],
 };
 
@@ -150,7 +151,7 @@ function StatusDot({ tone = "green" }: { tone?: string }) {
 }
 
 function TopBar({ section, onSearch }: { section: Section; onSearch: () => void }) {
-  const labels: Record<Section, string> = { home: "今天", notes: "知识库 / SuperSophie 发布计划", database: "产品任务", agents: "Agent Work", code: "代码工作台", connectors: "连接器" };
+  const labels: Record<Section, string> = { home: "今天", notes: "知识库 / SuperSophie 发布计划", agents: "Agent Work", code: "代码工作台", connectors: "连接器" };
   return (
     <header className="topbar">
       <div className="breadcrumbs"><span className="crumb-mark">S</span><span>{labels[section]}</span></div>
@@ -188,15 +189,15 @@ export function HomeView({ go }: { go: (section: Section) => void }) {
 
       <section className="home-grid">
         <div className="panel focus-panel">
-          <div className="panel-heading"><div><span className="section-kicker">NOW</span><h3>今日重点</h3></div><button onClick={() => go("database")}>查看全部</button></div>
+          <div className="panel-heading"><div><span className="section-kicker">NOW</span><h3>今日重点</h3></div><button onClick={() => go("notes")}>在笔记中查看</button></div>
           {initialTasks.slice(0, 3).map((task, index) => (
-            <button className="focus-item" key={task.id} onClick={() => go("database")}>
+            <button className="focus-item" key={task.id} onClick={() => go("notes")}>
               <span className={`task-check ${index === 2 ? "done" : ""}`}>{index === 2 ? "✓" : ""}</span>
               <span className="focus-copy"><strong>{task.title}</strong><small>{task.tags.join(" · ")} · {task.due}</small></span>
               <span className={`priority ${task.priority.toLowerCase()}`}>{task.priority}</span>
             </button>
           ))}
-          <button className="add-row" onClick={() => go("database")}>＋ 添加任务</button>
+          <button className="add-row" onClick={() => go("notes")}>＋ 添加任务</button>
         </div>
 
         <div className="panel recent-panel">
@@ -451,7 +452,7 @@ function ConversationHome({ go }: { go: (section: Section) => void }) {
 
   const railItems = [
     { label: "笔记", icon: NotePencil, section: "notes" as Section },
-    { label: "任务", icon: CheckSquare, section: "database" as Section },
+    { label: "数据库", icon: CheckSquare, section: "notes" as Section },
     { label: "Agent", icon: Robot, section: "agents" as Section },
     { label: "代码", icon: Code, section: "code" as Section },
   ];
@@ -649,8 +650,27 @@ function NotesView() {
   const [saveState, setSaveState] = useState<"saved" | "saving" | "offline" | "conflict">("saved");
   const [slashBlock, setSlashBlock] = useState<string>();
   const [draggedBlock, setDraggedBlock] = useState<string>();
+  const [focusRequest, setFocusRequest] = useState<{ id: string; position: number | "end" }>();
   const fileInput = useRef<HTMLInputElement>(null);
   const assetInput = useRef<HTMLInputElement>(null);
+  const blockInputs = useRef(new Map<string, HTMLTextAreaElement>());
+
+  const resizeBlockInput = (input: HTMLTextAreaElement) => {
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  };
+
+  useEffect(() => {
+    for (const input of blockInputs.current.values()) resizeBlockInput(input);
+    if (!focusRequest) return;
+    const input = blockInputs.current.get(focusRequest.id);
+    if (!input) return;
+    const position = focusRequest.position === "end" ? input.value.length : Math.min(focusRequest.position, input.value.length);
+    input.focus();
+    input.setSelectionRange(position, position);
+    input.scrollIntoView({ block: "nearest" });
+    setFocusRequest(undefined);
+  }, [focusRequest, page.blocks]);
 
   const applyImportedPackage = useCallback(async (source: string) => {
     const imported = await readSophiePackageWithAssets(source);
@@ -751,7 +771,7 @@ function NotesView() {
   };
 
   const addBlock = (afterId?: string, type: SophieBlock["type"] = "text") => {
-    const block: SophieBlock = { id: crypto.randomUUID(), type, content: "", ...(type === "todo" ? { checked: false } : {}), ...(type === "code" ? { language: "typescript" } : {}) };
+    const block: SophieBlock = { id: crypto.randomUUID(), type, content: type === "database" ? "product-tasks" : "", ...(type === "todo" ? { checked: false } : {}), ...(type === "code" ? { language: "typescript" } : {}) };
     setPage((current) => {
       const blocks = [...current.blocks];
       const index = afterId ? blocks.findIndex((item) => item.id === afterId) + 1 : blocks.length;
@@ -760,6 +780,33 @@ function NotesView() {
     });
     setSlashBlock(undefined);
     setSaveState("offline");
+    if (isTextEditableBlock(block.type)) setFocusRequest({ id: block.id, position: 0 });
+  };
+
+  const splitBlock = (block: SophieBlock, content: string, selectionStart: number, selectionEnd: number) => {
+    const { before, after } = splitBlockContent(content, selectionStart, selectionEnd);
+    const type = continuationBlockType(block.type);
+    const nextBlock: SophieBlock = { id: crypto.randomUUID(), type, content: after, ...(type === "todo" ? { checked: false } : {}) };
+    setPage((current) => {
+      const blocks = [...current.blocks];
+      const index = blocks.findIndex((item) => item.id === block.id);
+      if (index < 0) return current;
+      blocks[index] = { ...blocks[index], content: before } as SophieBlock;
+      blocks.splice(index + 1, 0, nextBlock);
+      return { ...current, blocks, updatedAt: new Date().toISOString() };
+    });
+    setSlashBlock(undefined);
+    setSaveState("offline");
+    setFocusRequest({ id: nextBlock.id, position: 0 });
+  };
+
+  const removeEmptyBlock = (block: SophieBlock) => {
+    if (page.blocks.length <= 1) return;
+    const focusId = nearestEditableBlockId(page.blocks, block.id);
+    setPage((current) => ({ ...current, blocks: current.blocks.filter((item) => item.id !== block.id), updatedAt: new Date().toISOString() }));
+    setSlashBlock(undefined);
+    setSaveState("offline");
+    if (focusId) setFocusRequest({ id: focusId, position: "end" });
   };
 
   const moveBlock = (id: string, direction: -1 | 1) => {
@@ -938,24 +985,27 @@ function NotesView() {
                 {block.type === "file" && (() => { const asset = pageAssets.find((item) => item.id === block.assetId); return asset ? <button className="file-block" onClick={() => downloadAsset(asset)}><span>⇩</span><strong>{asset.name}</strong><small>{asset.mime} · {(asset.size / 1024).toFixed(1)} KB</small></button> : <div className="missing-asset">文件附件缺失</div>; })()}
                 {block.type === "page-reference" && <div className="page-reference-block"><span>↗</span><select value={block.url ?? ""} onChange={(event) => { const target = pages.find((item) => item.id === event.target.value); updateBlock(block.id, { url: target?.id, content: target?.title ?? "" }); }}><option value="">选择一个页面…</option>{pages.filter((item) => item.id !== page.id).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><button disabled={!block.url} onClick={() => { const target = pages.find((item) => item.id === block.url); if (target) void openKnowledgePage(target); }}>打开</button></div>}
                 {block.type === "divider" && <hr className="divider-block" />}
-                {!(["image", "file", "page-reference", "divider"] as SophieBlock["type"][]).includes(block.type) && <textarea
+                {block.type === "database" && <DatabaseView key={`${block.id}:${block.content}`} embedded initialSourceId={block.content || "product-tasks"} onSourceIdChange={(sourceId) => { if (sourceId !== block.content) updateBlock(block.id, { content: sourceId }); }} />}
+                {isTextEditableBlock(block.type) && <textarea
+                  ref={(input) => { if (input) { blockInputs.current.set(block.id, input); resizeBlockInput(input); } else blockInputs.current.delete(block.id); }}
                   className="block-input"
+                  data-block-id={block.id}
                   rows={block.type === "code" ? 3 : 1}
                   value={block.content}
                   spellCheck={block.type !== "code"}
                   placeholder={block.type === "text" ? "输入 ‘/’ 打开命令…" : blockLabels[block.type]}
-                  onChange={(event) => { updateBlock(block.id, { content: event.target.value }); setSlashBlock(event.target.value === "/" ? block.id : undefined); }}
+                  onChange={(event) => { resizeBlockInput(event.currentTarget); updateBlock(block.id, { content: event.target.value }); setSlashBlock(event.target.value === "/" ? block.id : undefined); }}
                   onKeyDown={(event) => {
                     if (event.altKey && event.key === "ArrowUp") { event.preventDefault(); moveBlock(block.id, -1); }
                     if (event.altKey && event.key === "ArrowDown") { event.preventDefault(); moveBlock(block.id, 1); }
-                    if (event.key === "Enter" && !event.shiftKey && block.type !== "code") { event.preventDefault(); addBlock(block.id); }
-                    if (event.key === "Backspace" && !block.content && page.blocks.length > 1) { setPage((current) => ({ ...current, blocks: current.blocks.filter((item) => item.id !== block.id), updatedAt: new Date().toISOString() })); setSaveState("offline"); }
+                    if (event.key === "Enter" && !event.shiftKey && block.type !== "code" && !event.nativeEvent.isComposing) { event.preventDefault(); splitBlock(block, event.currentTarget.value, event.currentTarget.selectionStart, event.currentTarget.selectionEnd); }
+                    if (event.key === "Backspace" && !event.currentTarget.value && page.blocks.length > 1) { event.preventDefault(); removeEmptyBlock(block); }
                   }}
                 />}
                 {slashBlock === block.id && (
                   <div className="slash-menu">
                     <p>基础块</p>
-                    {slashBlockTypes.map((type) => <button key={type} onClick={() => { updateBlock(block.id, { type, content: "", ...(type === "todo" ? { checked: false } : {}) } as Partial<SophieBlock>); setSlashBlock(undefined); }}><span>{type === "heading" ? "H" : type === "todo" ? "☑" : type === "code" ? "⌘" : type === "database" ? "▦" : "¶"}</span><b>{blockLabels[type]}</b><small>{type === "text" ? "普通文本块" : `转换为${blockLabels[type]}块`}</small></button>)}
+                    {slashBlockTypes.map((type) => <button key={type} onClick={() => { updateBlock(block.id, { type, content: type === "database" ? "product-tasks" : "", ...(type === "todo" ? { checked: false } : {}) } as Partial<SophieBlock>); setSlashBlock(undefined); }}><span>{type === "heading" ? "H" : type === "todo" ? "☑" : type === "code" ? "⌘" : type === "database" ? "▦" : "¶"}</span><b>{blockLabels[type]}</b><small>{type === "text" ? "普通文本块" : `转换为${blockLabels[type]}块`}</small></button>)}
                   </div>
                 )}
               </div>
@@ -1357,9 +1407,9 @@ function DatabaseTemplatesModal({ sourceId, sourceName, schema, templates, relat
   return <div className="database-peek-backdrop" onMouseDown={onClose}><aside className="database-page-peek database-template-modal" onMouseDown={(event) => event.stopPropagation()}><header><span>{sourceName} / 数据库模板</span><div><button onClick={onClose}>完成</button><button onClick={onClose} aria-label="关闭模板">×</button></div></header><div className="template-manager-body"><section className="template-list"><div><strong>可用模板</strong><small>{templates.length} 个</small></div>{templates.map((template) => <article key={template.id}><span>{template.icon}</span><div><strong>{template.name}</strong><small>{template.description || template.title}</small></div><button disabled={Boolean(busy)} onClick={() => void createFromTemplate(template)}>使用</button><button disabled={Boolean(busy)} onClick={() => edit(template)}>编辑</button><button className="danger-text" disabled={Boolean(busy)} onClick={() => void remove(template)}>删除</button></article>)}</section><section className="template-editor"><header><div><strong>{draft.id ? "编辑模板" : "新建模板"}</strong><small>预设标题、属性与 Markdown 正文</small></div>{draft.id && <button onClick={() => setDraft(emptyDraft)}>新建另一个</button>}</header><div className="template-grid"><input value={draft.icon} maxLength={16} onChange={(event) => setDraft({ ...draft, icon: event.target.value })} aria-label="模板图标" /><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="模板名称" /><input className="wide" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="说明" /><input className="wide" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="新记录默认标题" /></div><div className="peek-properties">{editableProperties.map((property) => <DynamicPropertyInput key={property.id} property={property} task={templateTask} relationOptions={property.relation ? relationOptions[property.relation.dataSourceId] : undefined} update={(id, value) => setDraft((current) => ({ ...current, properties: { ...current.properties, [id]: value } }))} />)}</div><textarea rows={8} value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="模板 Markdown 正文" /><button className="primary-button" disabled={busy === "save" || !draft.name.trim() || !draft.title.trim()} onClick={() => void save()}>{busy === "save" ? "保存中…" : "保存模板"}</button></section></div><footer>{feedback}</footer></aside></div>;
 }
 
-function DatabaseView() {
+function DatabaseView({ embedded = false, initialSourceId = "product-tasks", onSourceIdChange }: { embedded?: boolean; initialSourceId?: string; onSourceIdChange?: (sourceId: string) => void }) {
   const [view, setView] = useState<ViewType>("table");
-  const [sourceId, setSourceId] = useState("product-tasks");
+  const [sourceId, setSourceId] = useState(initialSourceId || "product-tasks");
   const [sourceName, setSourceName] = useState("产品任务");
   const [sources, setSources] = useState<DatabaseSourceSummary[]>([]);
   const [templates, setTemplates] = useState<DatabaseTemplateSummary[]>([]);
@@ -1579,6 +1629,7 @@ function DatabaseView() {
       setSourceCreatorOpen(false);
       setView("table");
       setSourceId(payload.source.id);
+      onSourceIdChange?.(payload.source.id);
       setSelectedTask(undefined);
     } catch { setSyncState("offline"); }
   };
@@ -1601,8 +1652,8 @@ function DatabaseView() {
     return count(filterGroup);
   }, [filterGroup]);
   return (
-    <main className="database-content">
-      <header className="database-title"><div><span className="database-icon">▦</span><div><span className="database-source-picker"><select value={sourceId} onChange={(event) => { setSyncState("loading"); setView("table"); setSourceId(event.target.value); setSelectedTask(undefined); }}>{sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select><button onClick={() => setSourceCreatorOpen((open) => !open)}>＋ 数据源</button></span><h1>{sourceName}</h1><p>{visibleTasks.length} / {tasks.length} 条记录 · {propertySchema.properties.length} 个属性 · {sources.length} 个数据源 · {syncState === "synced" ? "云端已同步" : syncState === "saving" ? "保存中…" : syncState === "loading" ? "正在加载数据源…" : "离线副本"}</p>{sourceCreatorOpen && <span className="database-source-creator"><input autoFocus value={newSourceName} onChange={(event) => setNewSourceName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void createSource()} placeholder="新数据源名称" /><button onClick={() => void createSource()}>创建</button></span>}</div></div><div><button className="quiet-button" onClick={() => setTemplateEditorOpen(true)}>模板 {templates.length}</button><button className="quiet-button" onClick={() => setSchemaEditorOpen(true)}>编辑属性</button><button className="primary-small" onClick={() => addTask("未命名")}>＋ 新建</button></div></header>
+    <section className={`database-content ${embedded ? "embedded-database" : ""}`} data-testid={embedded ? "embedded-database" : "database-workspace"} data-source-id={sourceId}>
+      <header className="database-title"><div><span className="database-icon">▦</span><div><span className="database-source-picker"><select aria-label="选择数据库数据源" value={sourceId} onChange={(event) => { const nextSourceId = event.target.value; setSyncState("loading"); setView("table"); setSourceId(nextSourceId); onSourceIdChange?.(nextSourceId); setSelectedTask(undefined); }}>{sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select><button onClick={() => setSourceCreatorOpen((open) => !open)}>＋ 数据源</button></span><h1>{sourceName}</h1><p>{visibleTasks.length} / {tasks.length} 条记录 · {propertySchema.properties.length} 个属性 · {sources.length} 个数据源 · {syncState === "synced" ? "云端已同步" : syncState === "saving" ? "保存中…" : syncState === "loading" ? "正在加载数据源…" : "离线副本"}</p>{sourceCreatorOpen && <span className="database-source-creator"><input autoFocus value={newSourceName} onChange={(event) => setNewSourceName(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void createSource()} placeholder="新数据源名称" /><button onClick={() => void createSource()}>创建</button></span>}</div></div><div><button className="quiet-button" onClick={() => setTemplateEditorOpen(true)}>模板 {templates.length}</button><button className="quiet-button" onClick={() => setSchemaEditorOpen(true)}>编辑属性</button><button className="primary-small" onClick={() => addTask("未命名")}>＋ 新建</button></div></header>
       <div className="view-tabs"><div className="visible-tabs">{viewOptions.slice(0, 6).map((option) => <button className={view === option.id ? "active" : ""} key={option.id} onClick={() => selectView(option.id)}><span>{option.icon}</span>{option.label}</button>)}</div><div className="view-more"><button onClick={() => setViewMenu(!viewMenu)}>更多视图⌄</button>{viewMenu && <div className="view-menu">{viewOptions.slice(6).map((option) => <button key={option.id} onClick={() => { selectView(option.id); setViewMenu(false); }}><span>{option.icon}</span><div><b>{option.label}</b><small>{option.id === "form" ? "收集信息" : option.id === "map" ? "按位置展示" : "分析与组织数据"}</small></div></button>)}</div>}</div><div className="view-tools"><button className={searchOpen ? "active" : ""} onClick={() => setSearchOpen(!searchOpen)}>⌕</button><button className={toolMenu === "filter" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "filter" ? undefined : "filter")}>筛选 {filterCount > 0 && <b>{filterCount}</b>}</button><button className={toolMenu === "sort" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "sort" ? undefined : "sort")}>排序 {sorts.length > 0 && <b>{sorts.length}</b>}</button><button className={toolMenu === "group" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "group" ? undefined : "group")}>分组</button><button className={toolMenu === "colors" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "colors" ? undefined : "colors")}>颜色 {conditionalColors.length > 0 && <b>{conditionalColors.length}</b>}</button><button className={toolMenu === "properties" ? "active" : ""} onClick={() => setToolMenu(toolMenu === "properties" ? undefined : "properties")}>属性</button></div></div>
       {(searchOpen || toolMenu) && <div className="database-controls">
         {searchOpen && <label className="database-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索当前数据源…" /><button onClick={() => { setSearch(""); setSearchOpen(false); }}>×</button></label>}
@@ -1628,7 +1679,7 @@ function DatabaseView() {
       {selectedTask && <TaskPageDrawer key={selectedTask.id} task={selectedTask} schema={propertySchema} sourceName={sourceName} relationOptions={relationOptions} onClose={() => setSelectedTask(undefined)} onSave={saveTask} />}
       {schemaEditorOpen && <DatabaseSchemaEditor key={`${sourceId}-${schemaRevision}`} schema={propertySchema} sources={sources} currentSourceId={sourceId} currentSourceName={sourceName} saving={schemaSaving} onClose={() => setSchemaEditorOpen(false)} onSave={savePropertySchema} />}
       {templateEditorOpen && <DatabaseTemplatesModal sourceId={sourceId} sourceName={sourceName} schema={propertySchema} templates={templates} relationOptions={relationOptions} onClose={() => setTemplateEditorOpen(false)} onChanged={() => setDatabaseRefresh((current) => current + 1)} />}
-    </main>
+    </section>
   );
 }
 
@@ -2180,7 +2231,7 @@ function SearchPalette({ close, go }: { close: () => void; go: (section: Section
   const [query, setQuery] = useState("");
   const results = useMemo(() => [
     { label: "SuperSophie 发布计划", meta: "页面", section: "notes" as Section, icon: "✦" },
-    { label: "产品任务", meta: "数据库 · 11 个视图", section: "database" as Section, icon: "▦" },
+    { label: "产品任务", meta: "笔记内数据库 · 11 个视图", section: "notes" as Section, icon: "▦" },
     { label: "Agent Work", meta: "3 个子 Agent 运行中", section: "agents" as Section, icon: "✦" },
     { label: ".sophie 文件规范", meta: "架构文档", section: "notes" as Section, icon: "◫" },
     { label: "连接器", meta: "微信 · QQ · Telegram", section: "connectors" as Section, icon: "◎" },
@@ -2188,10 +2239,10 @@ function SearchPalette({ close, go }: { close: () => void; go: (section: Section
   return <div className="palette-backdrop" onMouseDown={close}><div className="search-palette" onMouseDown={(event) => event.stopPropagation()}><div className="palette-input"><span>⌕</span><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索页面、数据库、Agent 或命令…" /><kbd>ESC</kbd></div><p>最佳匹配</p>{results.map((item) => <button key={item.label} onClick={() => { go(item.section); close(); }}><span>{item.icon}</span><div><strong>{item.label}</strong><small>{item.meta}</small></div><i>↵</i></button>)}<footer><span><kbd>↑↓</kbd> 选择</span><span><kbd>↵</kbd> 打开</span><span><kbd>ESC</kbd> 关闭</span></footer></div></div>;
 }
 
-export function SophieWorkspace() {
-  const [section, setSection] = useState<Section>("home");
+export function SophieWorkspace({ initialSection = "home", testMode = false }: { initialSection?: Section; testMode?: boolean } = {}) {
+  const [section, setSection] = useState<Section>(initialSection);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
+  const [online, setOnline] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   useEffect(() => {
     const desktop = (window as typeof window & { sophieDesktop?: SophieDesktopBridge }).sophieDesktop;
@@ -2202,7 +2253,8 @@ export function SophieWorkspace() {
   useEffect(() => {
     const requestedSection = new URLSearchParams(location.search).get("section");
     const frame = requestAnimationFrame(() => {
-      if (["home", "notes", "database", "agents", "code", "connectors"].includes(requestedSection || "")) setSection(requestedSection as Section);
+      if (["home", "notes", "agents", "code", "connectors"].includes(requestedSection || "")) setSection(requestedSection as Section);
+      setOnline(navigator.onLine);
     });
     const onOnline = () => setOnline(true);
     const onOffline = () => setOnline(false);
@@ -2214,6 +2266,6 @@ export function SophieWorkspace() {
     return () => { cancelAnimationFrame(frame); removeEventListener("online", onOnline); removeEventListener("offline", onOffline); removeEventListener("keydown", onKey); };
   }, []);
   const go = (next: Section) => { setSection(next); setSidebarOpen(false); };
-  if (section === "home") return <><ConversationHome go={go} /><div className="home-identity"><WorkspaceMenu compact /></div></>;
-  return <div className="workspace-shell"><button className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button><aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><WorkspaceMenu /><nav>{navItems.map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span className="nav-icon">{item.icon}</span><strong>{item.label}</strong>{item.hint && <i>{item.hint}</i>}</button>)}</nav><div className="sidebar-section"><p>空间</p><button onClick={() => go("notes")}><span className="space-dot violet" />产品与架构</button><button onClick={() => go("database")}><span className="space-dot amber" />项目与任务</button><button onClick={() => go("notes")}><span className="space-dot blue" />研究与灵感</button><button><span>＋</span>新建空间</button></div><div className="sidebar-bottom"><button><span>?</span><strong>帮助与快捷键</strong></button><div className="sync-card"><span className="cloud-mark">☁</span><div><strong>{online ? "云端已同步" : "当前离线"}</strong><small>{online ? "App Cloud · 当前工作区" : "修改保存在此设备"}</small></div><StatusDot tone={online ? "green" : "amber"} /></div></div></aside><div className="workspace-main"><TopBar section={section} onSearch={() => setSearchOpen(true)} />{section === "notes" && <NotesView />}{section === "database" && <DatabaseView />}{section === "agents" && <AgentsView />}{section === "code" && <CodeView />}{section === "connectors" && <ConnectorsView />}</div>{searchOpen && <SearchPalette close={() => setSearchOpen(false)} go={go} />}<nav className="mobile-nav">{navItems.slice(0, 5).map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span>{item.icon}</span><small>{item.label}</small></button>)}</nav></div>;
+  if (section === "home") return <><ConversationHome go={go} />{!testMode && <div className="home-identity"><WorkspaceMenu compact /></div>}</>;
+  return <div className="workspace-shell"><button className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button><aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>{testMode ? <div className="identity-menu test-identity"><span className="brand-mark">S</span><strong>本地交互测试</strong></div> : <WorkspaceMenu />}<nav>{navItems.map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span className="nav-icon">{item.icon}</span><strong>{item.label}</strong>{item.hint && <i>{item.hint}</i>}</button>)}</nav><div className="sidebar-section"><p>空间</p><button onClick={() => go("notes")}><span className="space-dot violet" />产品与架构</button><button onClick={() => go("notes")}><span className="space-dot amber" />项目与任务</button><button onClick={() => go("notes")}><span className="space-dot blue" />研究与灵感</button><button><span>＋</span>新建空间</button></div><div className="sidebar-bottom"><button><span>?</span><strong>帮助与快捷键</strong></button><div className="sync-card"><span className="cloud-mark">☁</span><div><strong>{online ? "云端已同步" : "当前离线"}</strong><small>{online ? "App Cloud · 当前工作区" : "修改保存在此设备"}</small></div><StatusDot tone={online ? "green" : "amber"} /></div></div></aside><div className="workspace-main"><TopBar section={section} onSearch={() => setSearchOpen(true)} />{section === "notes" && <NotesView />}{section === "agents" && <AgentsView />}{section === "code" && <CodeView />}{section === "connectors" && <ConnectorsView />}</div>{searchOpen && <SearchPalette close={() => setSearchOpen(false)} go={go} />}<nav className="mobile-nav">{navItems.slice(0, 5).map((item) => <button className={section === item.id ? "active" : ""} key={item.id} onClick={() => go(item.id)}><span>{item.icon}</span><small>{item.label}</small></button>)}</nav></div>;
 }

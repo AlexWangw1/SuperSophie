@@ -1,4 +1,8 @@
-export const ACCESS_KEY_ITERATIONS = 600_000;
+// Cloudflare Workers Web Crypto rejects PBKDF2 counts above 100,000.
+// SuperSophie access keys are high-entropy random secrets, so PBKDF2 is a
+// database-compromise defense rather than the primary source of entropy.
+export const ACCESS_KEY_ITERATIONS = 100_000;
+export const MAX_PBKDF2_ITERATIONS = 100_000;
 
 function bytesToBase64Url(bytes: Uint8Array) {
   let binary = "";
@@ -22,6 +26,9 @@ export async function sha256(value: string) {
 }
 
 export async function deriveAccessKey(accessKey: string, salt = randomSecret(16), iterations = ACCESS_KEY_ITERATIONS) {
+  if (!Number.isInteger(iterations) || iterations < 1 || iterations > MAX_PBKDF2_ITERATIONS) {
+    throw new Error("access_key_work_factor_unsupported");
+  }
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(accessKey),

@@ -1,7 +1,15 @@
 import { env } from "cloudflare:workers";
 import { ensureSchema } from "../db/ensure";
 import { randomSecret, sha256 } from "./auth-crypto";
-export { deriveAccessKey, normalizeHandle, randomSecret, sha256, verifyAccessKey } from "./auth-crypto";
+export {
+  ACCESS_KEY_ITERATIONS,
+  MAX_PBKDF2_ITERATIONS,
+  deriveAccessKey,
+  normalizeHandle,
+  randomSecret,
+  sha256,
+  verifyAccessKey,
+} from "./auth-crypto";
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const COOKIE_PRODUCTION = "__Host-sophie_session";

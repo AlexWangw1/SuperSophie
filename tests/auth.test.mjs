@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   ACCESS_KEY_ITERATIONS,
+  MAX_PBKDF2_ITERATIONS,
   deriveAccessKey,
   normalizeHandle,
   randomSecret,
@@ -11,14 +12,19 @@ import {
 } from "../lib/auth-crypto.ts";
 import { publicResourceId, scopedResourceId } from "../lib/workspace-resource.ts";
 
-test("derives and verifies access keys with the OWASP PBKDF2 work factor", async () => {
+test("derives and verifies access keys within the Cloudflare PBKDF2 limit", async () => {
   const accessKey = "SS-a-long-random-access-key-for-sophie";
   const derived = await deriveAccessKey(accessKey);
   assert.equal(derived.iterations, ACCESS_KEY_ITERATIONS);
-  assert.equal(ACCESS_KEY_ITERATIONS, 600_000);
+  assert.equal(ACCESS_KEY_ITERATIONS, 100_000);
+  assert.equal(MAX_PBKDF2_ITERATIONS, 100_000);
   assert.notEqual(derived.hash, accessKey);
   assert.equal(await verifyAccessKey(accessKey, derived.hash, derived.salt, derived.iterations), true);
   assert.equal(await verifyAccessKey(`${accessKey}-wrong`, derived.hash, derived.salt, derived.iterations), false);
+  await assert.rejects(
+    deriveAccessKey(accessKey, derived.salt, MAX_PBKDF2_ITERATIONS + 1),
+    /access_key_work_factor_unsupported/,
+  );
 });
 
 test("creates high-entropy session material and normalizes account handles", async () => {
@@ -91,6 +97,7 @@ test("uses only SuperSophie authentication and rate-limits public registration",
   assert.match(gate, /\/api\/auth\/login/);
   assert.match(register, /MAX_REGISTRATIONS_PER_WINDOW/);
   assert.match(register, /too_many_registration_attempts/);
+  assert.doesNotMatch(register, /600_000|600000/);
   assert.doesNotMatch(desktop, /auth\.openai\.com|chatgpt\.com/);
   await assert.rejects(
     readFile(new URL("../app/chatgpt-auth.ts", import.meta.url), "utf8"),

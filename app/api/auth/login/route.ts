@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { ensureSchema } from "../../../../db/ensure";
 import {
+  ACCESS_KEY_ITERATIONS,
   assertSameOrigin,
   createSession,
   deviceLabel,
@@ -78,7 +79,7 @@ export async function POST(request: Request) {
       payload.accessKey,
       user?.accessKeyHash ?? DUMMY_HASH,
       user?.accessKeySalt ?? DUMMY_SALT,
-      user?.accessKeyIterations ?? 600_000,
+      user?.accessKeyIterations ?? ACCESS_KEY_ITERATIONS,
     );
     if (!user || !valid) {
       await recordFailure(limitId, limit);

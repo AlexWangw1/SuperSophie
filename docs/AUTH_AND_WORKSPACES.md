@@ -6,7 +6,7 @@ SuperSophie 使用“账户名 + 高熵访问密钥”登录。访问密钥仅�
 
 ## 安全模型
 
-- 访问密钥使用 600,000 次 PBKDF2-HMAC-SHA256；不存在的账户也执行等量派生工作，降低时序枚举。
+- 访问密钥使用 Cloudflare Workers Web Crypto 支持上限内的 100,000 次 PBKDF2-HMAC-SHA256；访问密钥本身由 32 字节安全随机数生成，不依赖人类口令提供熵。不存在的账户也执行等量派生工作，降低时序枚举。
 - 会话令牌为 256 位随机值，D1 只保存 SHA-256 哈希。
 - Cookie 使用 `HttpOnly`、`SameSite=Strict`；HTTPS 使用 `Secure` 与 `__Host-` 前缀。
 - 所有写操作校验同源请求，业务 API 在服务端校验工作区成员和写权限。

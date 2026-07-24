@@ -11,7 +11,7 @@ export function ensureSchema() {
       display_name TEXT NOT NULL,
       access_key_hash TEXT NOT NULL,
       access_key_salt TEXT NOT NULL,
-      access_key_iterations INTEGER NOT NULL DEFAULT 600000,
+      access_key_iterations INTEGER NOT NULL DEFAULT 100000,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
